@@ -39,7 +39,13 @@ CREATE OR ALTER TABLE customers (
     tags ARRAY,
     birth_date DATE,
     preferred_language STRING DEFAULT 'EN',
-    loyalty_points NUMBER(10,0) DEFAULT 0
+    loyalty_points NUMBER(10,0) DEFAULT 0,
+    marketing_consent BOOLEAN DEFAULT FALSE,
+    last_login_date TIMESTAMP_NTZ,
+    account_manager STRING,
+    company_size STRING,
+    industry STRING,
+    annual_revenue NUMBER(15,2)
 );
 
 -- Create or alter products table
