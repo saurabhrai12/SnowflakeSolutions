@@ -1,0 +1,44 @@
+# AWS Configuration
+aws_region  = "us-east-1"
+environment = "production"
+project_name = "snowflake-analytics"
+owner       = "analytics-team"
+
+# Snowflake Configuration
+snowflake_account   = "BIREZNC-ZHB27778"
+snowflake_user      = "SAURABHMAC"
+snowflake_password  = "AwsSnowAdmin1234"  # Consider using environment variable: TF_VAR_snowflake_password
+snowflake_database  = "analytics_platform"
+snowflake_warehouse = "analytics_wh"
+snowflake_schema    = "reporting"
+
+# Service Configuration
+enable_report_service    = true
+enable_streamlit_service = true
+
+# Resource Allocation
+report_service_cpu    = 1024  # 1 vCPU
+report_service_memory = 2048  # 2 GB
+report_service_desired_count = 1
+
+streamlit_service_cpu    = 1024  # 1 vCPU
+streamlit_service_memory = 2048  # 2 GB
+streamlit_service_desired_count = 1
+
+# CloudWatch Logs
+log_retention_days = 30
+
+# Auto Scaling (optional)
+enable_auto_scaling     = false
+auto_scaling_min_capacity = 1
+auto_scaling_max_capacity = 10
+auto_scaling_target_cpu   = 70
+
+# Load Balancer (optional)
+enable_load_balancer = false
+certificate_arn      = ""  # Add SSL certificate ARN if using HTTPS
+
+# Domain Configuration (optional)
+domain_name         = ""  # e.g., "yourdomain.com"
+subdomain_report    = "reports"    # Will create reports.yourdomain.com
+subdomain_streamlit = "chat"       # Will create chat.yourdomain.com

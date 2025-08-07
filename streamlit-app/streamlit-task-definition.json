@@ -1,0 +1,116 @@
+{
+  "family": "streamlit-cortex-analyst",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::203977009513:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "streamlit-cortex-analyst",
+      "image": "203977009513.dkr.ecr.us-east-1.amazonaws.com/streamlit-cortex-analyst:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8501,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "STREAMLIT_SERVER_PORT",
+          "value": "8501"
+        },
+        {
+          "name": "STREAMLIT_SERVER_ADDRESS",
+          "value": "0.0.0.0"
+        },
+        {
+          "name": "STREAMLIT_SERVER_HEADLESS",
+          "value": "true"
+        },
+        {
+          "name": "STREAMLIT_BROWSER_GATHER_USAGE_STATS",
+          "value": "false"
+        },
+        {
+          "name": "STREAMLIT_THEME_BASE",
+          "value": "light"
+        },
+        {
+          "name": "SERVICE_NAME",
+          "value": "streamlit-cortex-analyst"
+        },
+        {
+          "name": "SNOWFLAKE_ACCOUNT",
+          "value": "BIREZNC-ZHB27778"
+        },
+        {
+          "name": "SNOWFLAKE_USER",
+          "value": "SAURABHMAC"
+        },
+        {
+          "name": "SNOWFLAKE_DATABASE",
+          "value": "analytics_platform"
+        },
+        {
+          "name": "SNOWFLAKE_WAREHOUSE",
+          "value": "analytics_wh"
+        },
+        {
+          "name": "SNOWFLAKE_SCHEMA",
+          "value": "reporting"
+        },
+        {
+          "name": "SNOWFLAKE_PASSWORD",
+          "value": "AwsSnowAdmin1234"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/streamlit-cortex-analyst",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "curl -f http://localhost:8501/_stcore/health || exit 1"
+        ],
+        "interval": 30,
+        "timeout": 10,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "ulimits": [
+        {
+          "name": "nofile",
+          "softLimit": 65536,
+          "hardLimit": 65536
+        }
+      ],
+      "mountPoints": [],
+      "volumesFrom": []
+    }
+  ],
+  "volumes": [],
+  "placementConstraints": [],
+  "tags": [
+    {
+      "key": "Environment",
+      "value": "production"
+    },
+    {
+      "key": "Service",
+      "value": "streamlit-cortex-analyst"
+    },
+    {
+      "key": "Project",
+      "value": "SnowflakeSolutions"
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "serviceName": "snowflake-report-service",
+  "cluster": "snowflake-analytics-cluster",
+  "taskDefinition": "snowflake-report-service",
+  "desiredCount": 2,
+  "launchType": "FARGATE",
+  "platformVersion": "LATEST",
+  "networkConfiguration": {
+    "awsvpcConfiguration": {
+      "subnets": [
+        "subnet-0c8ae010a9215f951",
+        "subnet-0535fa2e0264d0701"
+      ],
+      "securityGroups": [
+        "sg-0472eb521ab57d29c"
+      ],
+      "assignPublicIp": "ENABLED"
+    }
+  },
+  "loadBalancers": [
+    {
+      "targetGroupArn": "arn:aws:elasticloadbalancing:REGION:ACCOUNT_ID:targetgroup/report-service-tg/XXXXXXXXX",
+      "containerName": "report-service",
+      "containerPort": 8000
+    }
+  ],
+  "serviceRegistries": [
+    {
+      "registryArn": "arn:aws:servicediscovery:REGION:ACCOUNT_ID:service/srv-XXXXXXXXX",
+      "containerName": "report-service",
+      "containerPort": 8000
+    }
+  ],
+  "deploymentConfiguration": {
+    "maximumPercent": 200,
+    "minimumHealthyPercent": 50,
+    "deploymentCircuitBreaker": {
+      "enable": true,
+      "rollback": true
+    }
+  },
+  "serviceTags": [
+    {
+      "key": "Environment",
+      "value": "production"
+    },
+    {
+      "key": "Service",
+      "value": "report-generation"
+    },
+    {
+      "key": "Component",
+      "value": "backend-api"
+    }
+  ],
+  "enableExecuteCommand": true,
+  "capacityProviderStrategy": [
+    {
+      "capacityProvider": "FARGATE",
+      "weight": 1
+    }
+  ]
+}

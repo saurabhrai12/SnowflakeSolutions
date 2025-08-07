@@ -1,0 +1,120 @@
+{
+  "family": "snowflake-streamlit-app",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/snowflake-streamlit-app-task-role",
+  "containerDefinitions": [
+    {
+      "name": "streamlit-app",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/snowflake-streamlit-app:latest",
+      "cpu": 256,
+      "memory": 512,
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8501,
+          "protocol": "tcp",
+          "name": "streamlit"
+        }
+      ],
+      "environment": [
+        {
+          "name": "SERVICE_NAME",
+          "value": "streamlit-cortex-analyst"
+        },
+        {
+          "name": "ENVIRONMENT",
+          "value": "production"
+        },
+        {
+          "name": "STREAMLIT_SERVER_PORT",
+          "value": "8501"
+        },
+        {
+          "name": "STREAMLIT_SERVER_ADDRESS",
+          "value": "0.0.0.0"
+        },
+        {
+          "name": "STREAMLIT_SERVER_HEADLESS",
+          "value": "true"
+        },
+        {
+          "name": "STREAMLIT_BROWSER_GATHER_USAGE_STATS",
+          "value": "false"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "SNOWFLAKE_ACCOUNT",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:snowflake/account"
+        },
+        {
+          "name": "SNOWFLAKE_USER",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:snowflake/user"
+        },
+        {
+          "name": "SNOWFLAKE_PASSWORD",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:snowflake/password"
+        },
+        {
+          "name": "SNOWFLAKE_DATABASE",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:snowflake/database"
+        },
+        {
+          "name": "SNOWFLAKE_WAREHOUSE",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:snowflake/warehouse"
+        },
+        {
+          "name": "SNOWFLAKE_SCHEMA",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:snowflake/schema"
+        }
+      ],
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "curl -f http://localhost:8501/_stcore/health || exit 1"
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/snowflake-streamlit-app",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "mountPoints": [],
+      "volumesFrom": [],
+      "ulimits": [
+        {
+          "name": "nofile",
+          "softLimit": 32768,
+          "hardLimit": 32768
+        }
+      ]
+    }
+  ],
+  "volumes": [],
+  "placementConstraints": [],
+  "tags": [
+    {
+      "key": "Environment",
+      "value": "production"
+    },
+    {
+      "key": "Service",
+      "value": "snowflake-streamlit-app"
+    },
+    {
+      "key": "ManagedBy",
+      "value": "terraform"
+    }
+  ]
+}

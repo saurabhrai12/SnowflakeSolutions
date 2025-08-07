@@ -1,0 +1,279 @@
+# =============================================================================
+# SECURITY - NEVER COMMIT THESE FILES
+# =============================================================================
+
+# Environment files containing secrets
+.env
+.env.local
+.env.development
+.env.staging
+.env.production
+.env.test
+*.env
+env.txt
+environment.txt
+
+# Credential files
+credentials.json
+secrets.json
+config.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Snowflake connection files
+.snowsql/
+snowsql_rt.log*
+connections.toml
+
+# Jenkins secrets and configs
+jenkins/.env
+jenkins/secrets/
+jenkins/credentials.xml
+
+# AWS credentials
+.aws/credentials
+.aws/config
+aws-credentials.txt
+
+# SSH keys
+id_rsa
+id_ed25519
+*.ppk
+authorized_keys
+known_hosts
+
+# =============================================================================
+# DEVELOPMENT TOOLS
+# =============================================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+.ENV/
+.env/
+pipenv/
+Pipfile.lock
+
+# UV (Python package manager)
+.uv/
+uv.lock
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# =============================================================================
+# INFRASTRUCTURE & DEPLOYMENT
+# =============================================================================
+
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfvars
+!terraform.tfvars.example
+.terraform/
+.terraform.lock.hcl
+crash.log
+crash.*.log
+terraform.rc
+.terraformrc
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# Kubernetes
+*.kubeconfig
+kubeconfig
+kube-config
+
+# =============================================================================
+# CLOUD SERVICES
+# =============================================================================
+
+# AWS
+.aws/
+aws-exports.js
+amplify-build-config.json
+amplify-gradle-config.json
+amplifytools.xcconfig
+
+# Google Cloud
+.gcloud/
+gcloud-service-key.json
+service-account-key.json
+
+# Azure
+.azure/
+
+# =============================================================================
+# DATABASES & LOGS
+# =============================================================================
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Log files
+*.log
+logs/
+log/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Deployment logs
+deployment-logs/
+build-logs/
+pipeline-logs/
+
+# =============================================================================
+# TEMPORARY & CACHE FILES
+# =============================================================================
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.#*
+#*#
+
+# Cache directories
+.cache/
+.npm/
+.yarn/
+node_modules/
+.pnpm-store/
+
+# =============================================================================
+# IDE & EDITOR FILES
+# =============================================================================
+
+# VSCode
+.vscode/settings.json
+.vscode/launch.json
+.vscode/extensions.json
+.vscode/tasks.json
+*.code-workspace
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# =============================================================================
+# PROJECT SPECIFIC
+# =============================================================================
+
+# Jenkins workspace
+jenkins/workspace/
+jenkins/jobs/
+jenkins/logs/
+jenkins/secrets/
+jenkins/plugins/
+
+# Test reports
+test-results/
+coverage/
+.coverage
+.pytest_cache/
+.tox/
+
+# Build artifacts
+dist/
+build/
+target/
+bin/
+obj/
+
+# Backup files
+*.backup
+*.bak
+*.old
+backup/
+
+# =============================================================================
+# WHITELIST IMPORTANT FILES (Override above rules)
+# =============================================================================
+
+# Keep example/template files
+!*.example
+!*.template
+!.env.example
+!terraform.tfvars.example
+!config.example.json
+
+# Keep documentation
+!README.md
+!CLAUDE.md
+!*.md
+
+# Keep GitHub Actions workflows
+!.github/workflows/
+!.github/workflows/*.yml
+!.github/workflows/*.yaml

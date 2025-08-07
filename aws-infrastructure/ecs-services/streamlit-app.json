@@ -1,0 +1,63 @@
+{
+  "serviceName": "snowflake-streamlit-app",
+  "cluster": "snowflake-analytics-cluster",
+  "taskDefinition": "snowflake-streamlit-app",
+  "desiredCount": 1,
+  "launchType": "FARGATE",
+  "platformVersion": "LATEST",
+  "networkConfiguration": {
+    "awsvpcConfiguration": {
+      "subnets": [
+        "subnet-XXXXXXXXX",
+        "subnet-YYYYYYYYY"
+      ],
+      "securityGroups": [
+        "sg-streamlit-app"
+      ],
+      "assignPublicIp": "ENABLED"
+    }
+  },
+  "loadBalancers": [
+    {
+      "targetGroupArn": "arn:aws:elasticloadbalancing:REGION:ACCOUNT_ID:targetgroup/streamlit-app-tg/XXXXXXXXX",
+      "containerName": "streamlit-app",
+      "containerPort": 8501
+    }
+  ],
+  "serviceRegistries": [
+    {
+      "registryArn": "arn:aws:servicediscovery:REGION:ACCOUNT_ID:service/srv-YYYYYYYYYYY",
+      "containerName": "streamlit-app",
+      "containerPort": 8501
+    }
+  ],
+  "deploymentConfiguration": {
+    "maximumPercent": 200,
+    "minimumHealthyPercent": 0,
+    "deploymentCircuitBreaker": {
+      "enable": true,
+      "rollback": true
+    }
+  },
+  "serviceTags": [
+    {
+      "key": "Environment",
+      "value": "production"
+    },
+    {
+      "key": "Service",
+      "value": "analytics-frontend"
+    },
+    {
+      "key": "Component",
+      "value": "streamlit-ui"
+    }
+  ],
+  "enableExecuteCommand": true,
+  "capacityProviderStrategy": [
+    {
+      "capacityProvider": "FARGATE",
+      "weight": 1
+    }
+  ]
+}

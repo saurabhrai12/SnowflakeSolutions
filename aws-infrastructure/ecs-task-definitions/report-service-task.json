@@ -1,0 +1,107 @@
+{
+  "family": "snowflake-report-service",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::203977009513:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::203977009513:role/snowflake-report-service-task-role",
+  "containerDefinitions": [
+    {
+      "name": "report-service",
+      "image": "203977009513.dkr.ecr.us-east-1.amazonaws.com/snowflake-report-service:latest",
+      "cpu": 512,
+      "memory": 1024,
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "SERVICE_NAME",
+          "value": "report-generator"
+        },
+        {
+          "name": "ENVIRONMENT",
+          "value": "production"
+        },
+        {
+          "name": "AWS_REGION",
+          "value": "us-east-1"
+        },
+        {
+          "name": "S3_REPORTS_BUCKET",
+          "value": "snowflake-reports-bucket-prod-203977009513"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "SNOWFLAKE_ACCOUNT",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:203977009513:secret:snowflake/account-qwS5Xr"
+        },
+        {
+          "name": "SNOWFLAKE_USER",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:203977009513:secret:snowflake/user-VCf0AZ"
+        },
+        {
+          "name": "SNOWFLAKE_PASSWORD",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:203977009513:secret:snowflake/password-5lgORr"
+        },
+        {
+          "name": "SNOWFLAKE_DATABASE",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:203977009513:secret:snowflake/database-HAJmi9"
+        },
+        {
+          "name": "SNOWFLAKE_WAREHOUSE",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:203977009513:secret:snowflake/warehouse-YDBeGW"
+        }
+      ],
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "curl -f http://localhost:8000/health || exit 1"
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/snowflake-report-service",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "mountPoints": [],
+      "volumesFrom": [],
+      "ulimits": [
+        {
+          "name": "nofile",
+          "softLimit": 65536,
+          "hardLimit": 65536
+        }
+      ]
+    }
+  ],
+  "volumes": [],
+  "placementConstraints": [],
+  "tags": [
+    {
+      "key": "Environment",
+      "value": "production"
+    },
+    {
+      "key": "Service",
+      "value": "snowflake-report-service"
+    },
+    {
+      "key": "ManagedBy",
+      "value": "terraform"
+    }
+  ]
+}
