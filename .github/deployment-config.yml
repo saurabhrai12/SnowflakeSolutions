@@ -1,4 +1,4 @@
-1# Snowflake Deployment Configuration
+# Snowflake Deployment Configuration
 # This file defines the schema deployment order and dependencies
 
 deployment:
