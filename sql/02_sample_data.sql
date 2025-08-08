@@ -11,39 +11,39 @@ USING (
         customer_id, customer_name, email, phone, 
         PARSE_JSON(address_str) AS address,
         customer_tier, lifetime_value, is_active,
-        PARSE_JSON(tags_str) AS tags
+        PARSE_JSON(tags_str) AS tags, profile_score
     FROM VALUES
         ('CUST001', 'Acme Corporation', 'contact@acme.com', '+1-555-0101', 
          '{"street": "123 Main St", "city": "New York", "state": "NY", "zip": "10001"}',
-         'ENTERPRISE', 150000.00, TRUE, '["B2B", "Enterprise", "Technology"]'),
+         'ENTERPRISE', 150000.00, TRUE, '["B2B", "Enterprise", "Technology"]', 95),
         ('CUST002', 'Global Tech Solutions', 'info@globaltech.com', '+1-555-0102',
          '{"street": "456 Tech Blvd", "city": "San Francisco", "state": "CA", "zip": "94102"}',
-         'ENTERPRISE', 275000.00, TRUE, '["B2B", "Enterprise", "Solutions"]'),
+         'ENTERPRISE', 275000.00, TRUE, '["B2B", "Enterprise", "Solutions"]', 92),
         ('CUST003', 'Startup Innovations', 'hello@startup.com', '+1-555-0103',
          '{"street": "789 Innovation Dr", "city": "Austin", "state": "TX", "zip": "73301"}',
-         'PREMIUM', 45000.00, TRUE, '["B2B", "Startup", "Innovation"]'),
+         'PREMIUM', 45000.00, TRUE, '["B2B", "Startup", "Innovation"]', 87),
         ('CUST004', 'Retail Chain Plus', 'orders@retailchain.com', '+1-555-0104',
          '{"street": "321 Commerce Ave", "city": "Chicago", "state": "IL", "zip": "60601"}',
-         'STANDARD', 85000.00, TRUE, '["B2B", "Retail", "Chain"]'),
+         'STANDARD', 85000.00, TRUE, '["B2B", "Retail", "Chain"]', 78),
         ('CUST005', 'Manufacturing Corp', 'procurement@manufacturing.com', '+1-555-0105',
          '{"street": "654 Industrial Way", "city": "Detroit", "state": "MI", "zip": "48201"}',
-         'ENTERPRISE', 320000.00, TRUE, '["B2B", "Manufacturing", "Industrial"]'),
+         'ENTERPRISE', 320000.00, TRUE, '["B2B", "Manufacturing", "Industrial"]', 88),
         ('CUST006', 'Healthcare Systems Inc', 'admin@healthsys.com', '+1-555-0106',
          '{"street": "987 Medical Center Dr", "city": "Boston", "state": "MA", "zip": "02115"}',
-         'ENTERPRISE', 425000.00, TRUE, '["B2B", "Healthcare", "Systems"]'),
+         'ENTERPRISE', 425000.00, TRUE, '["B2B", "Healthcare", "Systems"]', 98),
         ('CUST007', 'Education Network', 'support@ednet.edu', '+1-555-0107',
          '{"street": "246 Campus Rd", "city": "Seattle", "state": "WA", "zip": "98195"}',
-         'PREMIUM', 78000.00, TRUE, '["B2B", "Education", "Network"]'),
+         'PREMIUM', 78000.00, TRUE, '["B2B", "Education", "Network"]', 85),
         ('CUST008', 'Financial Services Group', 'contact@fingroup.com', '+1-555-0108',
          '{"street": "135 Wall St", "city": "New York", "state": "NY", "zip": "10005"}',
-         'ENTERPRISE', 680000.00, TRUE, '["B2B", "Financial", "Banking"]'),
+         'ENTERPRISE', 680000.00, TRUE, '["B2B", "Financial", "Banking"]', 96),
         ('CUST009', 'Media & Entertainment Co', 'info@mediaent.com', '+1-555-0109',
          '{"street": "468 Hollywood Blvd", "city": "Los Angeles", "state": "CA", "zip": "90028"}',
-         'PREMIUM', 195000.00, TRUE, '["B2B", "Media", "Entertainment"]'),
+         'PREMIUM', 195000.00, TRUE, '["B2B", "Media", "Entertainment"]', 82),
         ('CUST010', 'Small Business Solutions', 'hello@smallbiz.com', '+1-555-0110',
          '{"street": "753 Main St", "city": "Denver", "state": "CO", "zip": "80202"}',
-         'STANDARD', 32000.00, TRUE, '["B2B", "Small Business", "Solutions"]')
-    AS source(customer_id, customer_name, email, phone, address_str, customer_tier, lifetime_value, is_active, tags_str)
+         'STANDARD', 32000.00, TRUE, '["B2B", "Small Business", "Solutions"]', 73)
+    AS source(customer_id, customer_name, email, phone, address_str, customer_tier, lifetime_value, is_active, tags_str, profile_score)
 ) AS source
 ON target.customer_id = source.customer_id
 WHEN MATCHED THEN UPDATE SET
@@ -55,13 +55,14 @@ WHEN MATCHED THEN UPDATE SET
     lifetime_value = source.lifetime_value,
     is_active = source.is_active,
     tags = source.tags,
+    profile_score = source.profile_score,
     updated_at = CURRENT_TIMESTAMP()
 WHEN NOT MATCHED THEN INSERT (
     customer_id, customer_name, email, phone, address, customer_tier, 
-    lifetime_value, is_active, tags
+    lifetime_value, is_active, tags, profile_score
 ) VALUES (
     source.customer_id, source.customer_name, source.email, source.phone, 
-    source.address, source.customer_tier, source.lifetime_value, source.is_active, source.tags
+    source.address, source.customer_tier, source.lifetime_value, source.is_active, source.tags, source.profile_score
 );
 
 -- Insert sample products

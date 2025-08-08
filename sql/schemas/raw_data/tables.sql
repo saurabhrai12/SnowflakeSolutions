@@ -45,7 +45,8 @@ CREATE OR ALTER TABLE customers (
     account_manager STRING,
     company_size STRING,
     industry STRING,
-    annual_revenue NUMBER(15,2)
+    annual_revenue NUMBER(15,2),
+    profile_score NUMBER(3,0) DEFAULT 0 COMMENT 'Customer profile completeness score (0-100)'
 );
 
 -- Create or alter products table

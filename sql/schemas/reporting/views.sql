@@ -16,6 +16,7 @@ SELECT
     c.is_active,
     c.created_at as customer_since,
     c.tags as customer_tags,
+    c.profile_score,
     
     -- Order metrics
     COUNT(DISTINCT o.order_id) as total_orders,
@@ -49,7 +50,7 @@ LEFT JOIN raw_data.products p ON oi.product_id = p.product_id
 WHERE c.is_active = TRUE
 GROUP BY 
     c.customer_id, c.customer_name, c.email, c.phone, c.customer_tier,
-    c.lifetime_value, c.is_active, c.created_at, c.tags, c.address;
+    c.lifetime_value, c.is_active, c.created_at, c.tags, c.address, c.profile_score;
 
 -- Sales performance view
 CREATE OR ALTER VIEW sales_performance AS
