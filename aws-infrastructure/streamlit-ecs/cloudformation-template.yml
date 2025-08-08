@@ -1,0 +1,468 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Streamlit App ECS Fargate Infrastructure for Snowflake Analytics Platform'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: snowflake-analytics
+    Description: Name of the project
+  
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment environment
+  
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID for the infrastructure
+  
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of subnet IDs (minimum 2 for ALB)
+  
+  DomainName:
+    Type: String
+    Default: ""
+    Description: Custom domain name (optional)
+  
+  CertificateArn:
+    Type: String
+    Default: ""
+    Description: SSL Certificate ARN (optional)
+
+Conditions:
+  HasCustomDomain: !Not [!Equals [!Ref DomainName, ""]]
+  HasSSLCertificate: !Not [!Equals [!Ref CertificateArn, ""]]
+  IsProduction: !Equals [!Ref Environment, "prod"]
+
+Resources:
+  # ECR Repository for Streamlit App
+  StreamlitECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub '${ProjectName}-streamlit-app'
+      ImageTagMutability: MUTABLE
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 images",
+                "selection": {
+                  "tagStatus": "tagged",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      EncryptionConfiguration:
+        EncryptionType: AES256
+
+  # ECS Cluster
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${ProjectName}-cluster'
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+        - CapacityProvider: FARGATE_SPOT
+          Weight: !If [IsProduction, 0, 1]
+
+  # Application Load Balancer
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${ProjectName}-streamlit-alb'
+      Type: application
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Subnets: !Ref SubnetIds
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-streamlit-alb'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ALB Security Group
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Application Load Balancer
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP traffic
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS traffic
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-streamlit-alb-sg'
+
+  # ECS Task Security Group
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ECS tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8501
+          ToPort: 8501
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: Traffic from ALB
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-streamlit-ecs-sg'
+
+  # Target Group
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${ProjectName}-streamlit-tg'
+      Port: 8501
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckEnabled: true
+      HealthCheckPath: /_stcore/health
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+
+  # ALB Listener (HTTP)
+  ALBListenerHTTP:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: !If
+          - HasSSLCertificate
+          - redirect
+          - forward
+          RedirectConfig: !If
+            - HasSSLCertificate
+            - Protocol: HTTPS
+              Port: 443
+              StatusCode: HTTP_301
+            - !Ref 'AWS::NoValue'
+          TargetGroupArn: !If
+            - HasSSLCertificate
+            - !Ref 'AWS::NoValue'
+            - !Ref TargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  # ALB Listener (HTTPS)
+  ALBListenerHTTPS:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: HasSSLCertificate
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+
+  # CloudWatch Log Groups
+  StreamlitLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/streamlit-app/${Environment}'
+      RetentionInDays: !If [IsProduction, 30, 7]
+
+  # IAM Role for ECS Task Execution
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-streamlit-execution-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:streamlit/${Environment}/*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt StreamlitLogGroup.Arn
+
+  # IAM Role for ECS Task
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-streamlit-task-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StreamlitAppPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt StreamlitLogGroup.Arn
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:streamlit/${Environment}/*'
+
+  # ECS Task Definition for each environment
+  StreamlitTaskDefinitionDev:
+    Type: AWS::ECS::TaskDefinition
+    Condition: !Equals [!Ref Environment, "dev"]
+    Properties:
+      Family: !Sub 'streamlit-app-${Environment}'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: 512
+      Memory: 1024
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: streamlit-app
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${StreamlitECRRepository}:dev-latest'
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8501
+              Protocol: tcp
+          Environment:
+            - Name: ENVIRONMENT
+              Value: !Ref Environment
+            - Name: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
+          Secrets:
+            - Name: SNOWFLAKE_ACCOUNT
+              ValueFrom: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:streamlit/${Environment}/snowflake:ACCOUNT::'
+            - Name: SNOWFLAKE_USER
+              ValueFrom: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:streamlit/${Environment}/snowflake:USER::'
+            - Name: SNOWFLAKE_PASSWORD
+              ValueFrom: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:streamlit/${Environment}/snowflake:PASSWORD::'
+            - Name: SNOWFLAKE_DATABASE
+              ValueFrom: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:streamlit/${Environment}/snowflake:DATABASE::'
+            - Name: SNOWFLAKE_WAREHOUSE
+              ValueFrom: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:streamlit/${Environment}/snowflake:WAREHOUSE::'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref StreamlitLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - curl -f http://localhost:8501/_stcore/health || exit 1
+            Interval: 30
+            Timeout: 10
+            Retries: 3
+            StartPeriod: 60
+
+  StreamlitTaskDefinitionStaging:
+    Type: AWS::ECS::TaskDefinition
+    Condition: !Equals [!Ref Environment, "staging"]
+    Properties:
+      Family: !Sub 'streamlit-app-${Environment}'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: 1024
+      Memory: 2048
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: streamlit-app
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${StreamlitECRRepository}:staging-latest'
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8501
+              Protocol: tcp
+          Environment:
+            - Name: ENVIRONMENT
+              Value: !Ref Environment
+            - Name: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
+          Secrets:
+            - Name: SNOWFLAKE_ACCOUNT
+              ValueFrom: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:streamlit/${Environment}/snowflake:ACCOUNT::'
+            - Name: SNOWFLAKE_USER
+              ValueFrom: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:streamlit/${Environment}/snowflake:USER::'
+            - Name: SNOWFLAKE_PASSWORD
+              ValueFrom: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:streamlit/${Environment}/snowflake:PASSWORD::'
+            - Name: SNOWFLAKE_DATABASE
+              ValueFrom: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:streamlit/${Environment}/snowflake:DATABASE::'
+            - Name: SNOWFLAKE_WAREHOUSE
+              ValueFrom: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:streamlit/${Environment}/snowflake:WAREHOUSE::'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref StreamlitLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - curl -f http://localhost:8501/_stcore/health || exit 1
+            Interval: 30
+            Timeout: 10
+            Retries: 3
+            StartPeriod: 60
+
+  StreamlitTaskDefinitionProd:
+    Type: AWS::ECS::TaskDefinition
+    Condition: !Equals [!Ref Environment, "prod"]
+    Properties:
+      Family: !Sub 'streamlit-app-${Environment}'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: 2048
+      Memory: 4096
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: streamlit-app
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${StreamlitECRRepository}:prod-latest'
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8501
+              Protocol: tcp
+          Environment:
+            - Name: ENVIRONMENT
+              Value: !Ref Environment
+            - Name: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
+          Secrets:
+            - Name: SNOWFLAKE_ACCOUNT
+              ValueFrom: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:streamlit/${Environment}/snowflake:ACCOUNT::'
+            - Name: SNOWFLAKE_USER
+              ValueFrom: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:streamlit/${Environment}/snowflake:USER::'
+            - Name: SNOWFLAKE_PASSWORD
+              ValueFrom: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:streamlit/${Environment}/snowflake:PASSWORD::'
+            - Name: SNOWFLAKE_DATABASE
+              ValueFrom: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:streamlit/${Environment}/snowflake:DATABASE::'
+            - Name: SNOWFLAKE_WAREHOUSE
+              ValueFrom: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:streamlit/${Environment}/snowflake:WAREHOUSE::'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref StreamlitLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - curl -f http://localhost:8501/_stcore/health || exit 1
+            Interval: 30
+            Timeout: 10
+            Retries: 3
+            StartPeriod: 60
+
+  # ECS Service
+  StreamlitService:
+    Type: AWS::ECS::Service
+    DependsOn: ALBListenerHTTP
+    Properties:
+      ServiceName: !Sub 'streamlit-app-${Environment}'
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !If
+        - !Equals [!Ref Environment, "dev"]
+        - !Ref StreamlitTaskDefinitionDev
+        - !If
+          - !Equals [!Ref Environment, "staging"]
+          - !Ref StreamlitTaskDefinitionStaging
+          - !Ref StreamlitTaskDefinitionProd
+      DesiredCount: !If [IsProduction, 2, 1]
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets: !Ref SubnetIds
+          AssignPublicIp: ENABLED
+      LoadBalancers:
+        - ContainerName: streamlit-app
+          ContainerPort: 8501
+          TargetGroupArn: !Ref TargetGroup
+      HealthCheckGracePeriodSeconds: 300
+
+Outputs:
+  LoadBalancerDNS:
+    Description: DNS name of the load balancer
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: !Sub '${AWS::StackName}-LoadBalancerDNS'
+
+  StreamlitAppURL:
+    Description: URL of the Streamlit application
+    Value: !Sub 
+      - '${Protocol}://${DNSName}'
+      - Protocol: !If [HasSSLCertificate, 'https', 'http']
+        DNSName: !If [HasCustomDomain, !Ref DomainName, !GetAtt ApplicationLoadBalancer.DNSName]
+
+  ECSClusterName:
+    Description: Name of the ECS cluster
+    Value: !Ref ECSCluster
+    Export:
+      Name: !Sub '${AWS::StackName}-ECSCluster'
+
+  ECRRepositoryURI:
+    Description: URI of the ECR repository
+    Value: !GetAtt StreamlitECRRepository.RepositoryUri
+    Export:
+      Name: !Sub '${AWS::StackName}-ECRRepository'
+
+  TaskExecutionRoleArn:
+    Description: ARN of the task execution role
+    Value: !GetAtt ECSTaskExecutionRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskExecutionRole'
+
+  TaskRoleArn:
+    Description: ARN of the task role
+    Value: !GetAtt ECSTaskRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskRole'

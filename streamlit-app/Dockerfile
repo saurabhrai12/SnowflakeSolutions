@@ -75,8 +75,8 @@ USER streamlit
 # Expose port for local development
 EXPOSE 8501
 
-# Health check for container health monitoring
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+# Health check for ECS health monitoring
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:8501/_stcore/health || exit 1
 
 # Run the Streamlit application
