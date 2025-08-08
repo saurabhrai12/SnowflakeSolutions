@@ -65,8 +65,7 @@ CREATE OR ALTER TABLE products (
     specifications VARIANT,
     sustainability_rating STRING,
     warranty_months NUMBER(3,0) DEFAULT 12,
-    brand STRING,
-    popularity_score NUMBER(3,0) DEFAULT 50 COMMENT 'Product popularity score (0-100) based on sales and reviews'
+    brand STRING
 );
 
 -- Create or alter orders table

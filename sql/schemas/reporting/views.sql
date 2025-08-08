@@ -128,7 +128,6 @@ SELECT
     p.supplier_info:vendor::STRING as vendor,
     p.supplier_info:support_level::STRING as support_level,
     p.specifications,
-    p.popularity_score,
     
     -- Rankings
     RANK() OVER (ORDER BY SUM(oi.total_price) DESC) as revenue_rank,
@@ -142,7 +141,7 @@ LEFT JOIN raw_data.customers c ON o.customer_id = c.customer_id
 WHERE p.is_active = TRUE
 GROUP BY 
     p.product_id, p.product_name, p.category, p.price, p.cost,
-    p.inventory_count, p.supplier_info, p.specifications, p.popularity_score
+    p.inventory_count, p.supplier_info, p.specifications
 ORDER BY total_revenue DESC NULLS LAST;
 
 -- Job monitoring view

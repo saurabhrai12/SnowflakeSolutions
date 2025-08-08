@@ -72,40 +72,40 @@ USING (
         product_id, product_name, category, price, cost, description, is_active,
         inventory_count,
         PARSE_JSON(supplier_info_str) AS supplier_info,
-        PARSE_JSON(specifications_str) AS specifications, popularity_score
+        PARSE_JSON(specifications_str) AS specifications
     FROM VALUES
         ('PROD001', 'Analytics Platform Pro', 'Software', 5000.00, 1500.00, 'Enterprise analytics solution',
          TRUE, 100, '{"vendor": "TechCorp", "support_level": "Premium"}',
-         '{"cpu_cores": 8, "memory_gb": 32, "storage_gb": 1000}', 88),
+         '{"cpu_cores": 8, "memory_gb": 32, "storage_gb": 1000}'),
         ('PROD002', 'Data Visualization Suite', 'Software', 2500.00, 800.00, 'Advanced data visualization tools',
          TRUE, 150, '{"vendor": "VizCorp", "support_level": "Standard"}',
-         '{"charts": 50, "dashboards": 20, "users": 100}', 92),
+         '{"charts": 50, "dashboards": 20, "users": 100}'),
         ('PROD003', 'Machine Learning Toolkit', 'Software', 7500.00, 2000.00, 'ML and AI development platform',
          TRUE, 75, '{"vendor": "MLCorp", "support_level": "Premium"}',
-         '{"algorithms": 200, "models": 50, "api_calls": 1000000}', 95),
+         '{"algorithms": 200, "models": 50, "api_calls": 1000000}'),
         ('PROD004', 'Business Intelligence Basic', 'Software', 1200.00, 400.00, 'Basic BI reporting tools',
          TRUE, 300, '{"vendor": "BICorp", "support_level": "Basic"}',
-         '{"reports": 25, "users": 25, "data_sources": 10}', 76),
+         '{"reports": 25, "users": 25, "data_sources": 10}'),
         ('PROD005', 'Data Integration Hub', 'Software', 3500.00, 1000.00, 'ETL and data pipeline management',
          TRUE, 120, '{"vendor": "DataCorp", "support_level": "Standard"}',
-         '{"connectors": 100, "pipelines": 50, "throughput_gb": 1000}', 84),
+         '{"connectors": 100, "pipelines": 50, "throughput_gb": 1000}'),
         ('PROD006', 'Cloud Security Suite', 'Security', 4800.00, 1200.00, 'Comprehensive cloud security platform',
          TRUE, 90, '{"vendor": "SecureCorp", "support_level": "Premium"}',
-         '{"vulnerabilities_scanned": 50000, "compliance_frameworks": 15, "threat_detection": true}', 91),
+         '{"vulnerabilities_scanned": 50000, "compliance_frameworks": 15, "threat_detection": true}'),
         ('PROD007', 'Database Management Pro', 'Software', 6200.00, 1800.00, 'Advanced database administration tools',
          TRUE, 60, '{"vendor": "DBCorp", "support_level": "Premium"}',
-         '{"databases_supported": 25, "backup_automation": true, "performance_monitoring": true}', 87),
+         '{"databases_supported": 25, "backup_automation": true, "performance_monitoring": true}'),
         ('PROD008', 'API Gateway Enterprise', 'Infrastructure', 3800.00, 900.00, 'Enterprise API management solution',
          TRUE, 110, '{"vendor": "APICorp", "support_level": "Standard"}',
-         '{"api_calls_per_month": 10000000, "rate_limiting": true, "analytics": true}', 82),
+         '{"api_calls_per_month": 10000000, "rate_limiting": true, "analytics": true}'),
         ('PROD009', 'Mobile Development Kit', 'Software', 2200.00, 600.00, 'Cross-platform mobile development tools',
          TRUE, 200, '{"vendor": "MobileCorp", "support_level": "Standard"}',
-         '{"platforms": ["iOS", "Android", "Web"], "components": 500, "themes": 20}', 79),
+         '{"platforms": ["iOS", "Android", "Web"], "components": 500, "themes": 20}'),
         ('PROD010', 'IoT Data Platform', 'Platform', 8500.00, 2500.00, 'Industrial IoT data collection and analysis',
          TRUE, 45, '{"vendor": "IoTCorp", "support_level": "Premium"}',
-         '{"devices_supported": 100000, "protocols": 20, "real_time_processing": true}', 93)
+         '{"devices_supported": 100000, "protocols": 20, "real_time_processing": true}')
     AS source(product_id, product_name, category, price, cost, description, is_active, 
-              inventory_count, supplier_info_str, specifications_str, popularity_score)
+              inventory_count, supplier_info_str, specifications_str)
 ) AS source
 ON target.product_id = source.product_id
 WHEN MATCHED THEN UPDATE SET
@@ -118,15 +118,14 @@ WHEN MATCHED THEN UPDATE SET
     inventory_count = source.inventory_count,
     supplier_info = source.supplier_info,
     specifications = source.specifications,
-    popularity_score = source.popularity_score,
     updated_at = CURRENT_TIMESTAMP()
 WHEN NOT MATCHED THEN INSERT (
     product_id, product_name, category, price, cost, description, is_active,
-    inventory_count, supplier_info, specifications, popularity_score
+    inventory_count, supplier_info, specifications
 ) VALUES (
     source.product_id, source.product_name, source.category, source.price, source.cost,
     source.description, source.is_active, source.inventory_count, source.supplier_info,
-    source.specifications, source.popularity_score
+    source.specifications
 );
 
 -- Insert sample orders
