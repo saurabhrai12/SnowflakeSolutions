@@ -1,4 +1,10 @@
-name: 🗄️ Snowflake Deployment Pipeline
+name: 🗄️ Snowflake Branch-Based Deployment Pipeline
+# 
+# Branch-based deployment strategy:
+# - feature/*, feat/*, dev/* branches → DEV environment
+# - main branch → STAGING environment  
+# - Manual workflow_dispatch → Any environment (DEV/STAGING/PROD)
+# - Pull requests → DEV environment (dry run)
 
 on:
   # Manual trigger with environment selection
@@ -38,12 +44,12 @@ on:
         default: false
         type: boolean
       
-  # Automatic trigger for DEV on main branch
+  # Automatic triggers: feature branches → DEV, main → STAGING
   push:
-    branches: [ main ]
+    branches: [ main, 'feature/**', 'feat/**', 'dev/**' ]
     paths: [ 'sql/**' ]
     
-  # Automatic trigger for DEV on PR
+  # Pull requests always deploy to DEV (dry run)
   pull_request:
     branches: [ main ]
     paths: [ 'sql/**' ]
@@ -80,7 +86,18 @@ jobs:
             DRY_RUN="${{ github.event.inputs.dry_run }}"
             LOAD_SAMPLE_DATA="${{ github.event.inputs.load_sample_data }}"
           elif [ "${{ github.event_name }}" = "push" ]; then
-            TARGET_ENV="DEV"
+            # Branch-based environment selection
+            BRANCH_NAME="${{ github.ref_name }}"
+            if [ "$BRANCH_NAME" = "main" ]; then
+              TARGET_ENV="STAGING"
+              echo "🎯 Main branch detected - deploying to STAGING"
+            elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == feat/* ]] || [[ "$BRANCH_NAME" == dev/* ]]; then
+              TARGET_ENV="DEV"
+              echo "🎯 Feature branch ($BRANCH_NAME) detected - deploying to DEV"
+            else
+              TARGET_ENV="DEV"
+              echo "🎯 Unknown branch ($BRANCH_NAME) - defaulting to DEV"
+            fi
             DEPLOYMENT_MODE="INCREMENTAL"
             TARGET_SCHEMAS=""
             DRY_RUN="false"
