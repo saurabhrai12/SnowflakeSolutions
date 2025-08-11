@@ -65,7 +65,16 @@ CREATE OR ALTER TABLE products (
     specifications VARIANT,
     sustainability_rating STRING,
     warranty_months NUMBER(3,0) DEFAULT 12,
-    brand STRING
+    brand STRING,
+    popularity_score NUMBER(5,2) DEFAULT 0.0 COMMENT 'Product popularity score based on sales and views',
+    rating NUMBER(3,2) DEFAULT 0.0 COMMENT 'Average customer rating (0.00-5.00)',
+    review_count NUMBER(10,0) DEFAULT 0 COMMENT 'Total number of customer reviews',
+    weight_kg NUMBER(8,3) COMMENT 'Product weight in kilograms',
+    dimensions VARIANT COMMENT 'Product dimensions (length, width, height)',
+    color_options ARRAY COMMENT 'Available color variations',
+    tags ARRAY COMMENT 'Product tags for search and categorization',
+    launch_date DATE COMMENT 'Product launch date',
+    discontinued_date DATE COMMENT 'Date when product was discontinued'
 );
 
 -- Create or alter orders table
