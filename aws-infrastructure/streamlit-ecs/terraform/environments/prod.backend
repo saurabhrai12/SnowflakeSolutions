@@ -1,0 +1,5 @@
+bucket         = "snowflake-analytics-terraform-state"
+key            = "streamlit-ecs/prod/terraform.tfstate"
+region         = "us-east-1"
+dynamodb_table = "terraform-state-locks"
+encrypt        = true

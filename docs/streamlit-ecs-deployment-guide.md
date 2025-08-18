@@ -1,16 +1,35 @@
 # Streamlit ECS Fargate Deployment Guide
 
-This guide provides step-by-step instructions for deploying the Snowflake Cortex Analyst Streamlit application on AWS ECS Fargate using Docker and GitHub Actions CI/CD.
+This guide provides step-by-step instructions for deploying the Snowflake Cortex Analyst Streamlit application on AWS ECS Fargate using Terraform Infrastructure as Code and GitHub Actions CI/CD.
 
 ## Overview
 
 The deployment architecture includes:
-- **Docker containerization** with multi-stage builds and security best practices
+- **Terraform Infrastructure as Code** for reproducible infrastructure management
+- **Docker containerization** with multi-stage builds and security best practices  
 - **GitHub Actions CI/CD** with branch-based deployments (feature → dev, main → staging)
 - **AWS ECS Fargate** for serverless container orchestration
 - **Application Load Balancer (ALB)** for traffic distribution and SSL termination
 - **AWS Secrets Manager** for secure credential management
 - **CloudWatch** for comprehensive logging and monitoring
+
+## Deployment Options
+
+This repository now supports **two deployment approaches**:
+
+### 🆕 **Terraform Deployment (Recommended)**
+- **Location**: `aws-infrastructure/streamlit-ecs/terraform/`
+- **Benefits**: Infrastructure as Code, state management, better validation
+- **Use Cases**: Production environments, team collaboration, complex infrastructure
+- **GitHub Workflow**: `.github/workflows/streamlit-terraform-deployment.yml`
+
+### 🔄 **CloudFormation Deployment (Legacy)**
+- **Location**: `aws-infrastructure/streamlit-ecs/cloudformation-template.yml`
+- **Benefits**: AWS-native, simpler for basic deployments
+- **Use Cases**: Quick deployments, AWS-only environments
+- **GitHub Workflow**: `.github/workflows/streamlit-app-deployment.yml`
+
+**💡 For new deployments, we recommend using the Terraform approach for better infrastructure management.**
 
 ## Prerequisites
 
@@ -45,13 +64,50 @@ SNOWFLAKE_PASSWORD=your_snowflake_password
 
 ## Step 1: Infrastructure Setup
 
-### 1.1 Deploy Infrastructure using CloudFormation
+### 1.1 Deploy Infrastructure using Terraform (Recommended)
 
-The infrastructure is defined in `aws-infrastructure/streamlit-ecs/cloudformation-template.yml`.
+The infrastructure is defined using Terraform in `aws-infrastructure/streamlit-ecs/terraform/`.
 
 **Prerequisites:**
+- Terraform >= 1.5.0 installed
 - Existing VPC with at least 2 public subnets
 - AWS CLI configured with appropriate permissions
+- (Optional) S3 bucket for Terraform state storage
+
+**Setup and Deploy:**
+```bash
+cd aws-infrastructure/streamlit-ecs/terraform
+
+# 1. Configure environment variables
+vi environments/dev.tfvars
+# Update VPC ID and subnet IDs with your values
+
+# 2. (Optional) Setup remote state backend
+aws s3 mb s3://your-terraform-state-bucket
+vi environments/dev.backend
+# Update bucket name
+
+# 3. Deploy infrastructure
+./deploy.sh -e dev
+
+# Alternative: Using Makefile
+make quick-dev
+
+# For staging environment (with SSL)
+./deploy.sh -e staging
+
+# For production environment
+./deploy.sh -e prod
+```
+
+**Environment-Specific Configurations:**
+- **Dev**: 512 CPU, 1GB RAM, cost-optimized with Fargate Spot
+- **Staging**: 1024 CPU, 2GB RAM, mixed Fargate/Fargate Spot
+- **Prod**: 2048 CPU, 4GB RAM, high availability with 2 replicas
+
+### 1.2 Deploy Infrastructure using CloudFormation (Legacy)
+
+The infrastructure is defined in `aws-infrastructure/streamlit-ecs/cloudformation-template.yml`.
 
 **Deploy Infrastructure:**
 ```bash
@@ -99,19 +155,34 @@ aws secretsmanager update-secret \
 
 ### 2.1 Workflow Configuration
 
-The CI/CD pipeline is defined in `.github/workflows/streamlit-app-deployment.yml` and includes:
+The repository includes two CI/CD workflows:
 
-**Workflow Triggers:**
+#### 🆕 **Terraform Deployment Workflow** (Recommended)
+- **File**: `.github/workflows/streamlit-terraform-deployment.yml`
+- **Features**: Infrastructure as Code, state management, comprehensive validation
+- **Stages**:
+  1. **Setup**: Determine environment and deployment parameters
+  2. **Build & Test**: Python dependency installation, security scanning
+  3. **Terraform**: Infrastructure planning and deployment
+  4. **Docker**: Build and push container image
+  5. **Deploy**: Update ECS service with new container
+
+#### 🔄 **CloudFormation Deployment Workflow** (Legacy)
+- **File**: `.github/workflows/streamlit-app-deployment.yml`  
+- **Features**: AWS-native deployment with CloudFormation
+
+**Workflow Triggers (Both):**
 - **Push to feature branches** → Deploy to DEV environment
 - **Push to main branch** → Deploy to STAGING environment  
 - **Manual dispatch** → Deploy to any environment (DEV/STAGING/PROD)
-- **Pull requests** → Deploy to DEV for testing
+- **Pull requests** → Plan/validate deployment to DEV
 
-**Pipeline Stages:**
+**Terraform Pipeline Stages:**
 1. **Setup**: Determine environment and deployment parameters
 2. **Build & Test**: Python dependency installation, security scanning
-3. **Docker**: Build multi-platform image, vulnerability scanning, push to ECR
-4. **Deploy**: Update ECS service with new task definition
+3. **Terraform**: Plan/apply infrastructure changes with validation
+4. **Docker**: Build multi-platform image, vulnerability scanning, push to ECR
+5. **Deploy**: Update ECS service with new task definition
 
 ### 2.2 Environment-Specific Deployments
 

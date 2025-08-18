@@ -35,6 +35,8 @@ Conditions:
   HasCustomDomain: !Not [!Equals [!Ref DomainName, ""]]
   HasSSLCertificate: !Not [!Equals [!Ref CertificateArn, ""]]
   IsProduction: !Equals [!Ref Environment, "prod"]
+  IsDev: !Equals [!Ref Environment, "dev"]
+  IsStaging: !Equals [!Ref Environment, "staging"]
 
 Resources:
   # ECR Repository for Streamlit App
@@ -51,7 +53,7 @@ Resources:
                 "rulePriority": 1,
                 "description": "Keep last 10 images",
                 "selection": {
-                  "tagStatus": "tagged",
+                  "tagStatus": "any",
                   "countType": "imageCountMoreThan",
                   "countNumber": 10
                 },
@@ -82,7 +84,7 @@ Resources:
   ApplicationLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      Name: !Sub '${ProjectName}-streamlit-alb'
+      Name: !Sub '${ProjectName}-alb-${Environment}'
       Type: application
       Scheme: internet-facing
       SecurityGroups:
@@ -90,7 +92,7 @@ Resources:
       Subnets: !Ref SubnetIds
       Tags:
         - Key: Name
-          Value: !Sub '${ProjectName}-streamlit-alb'
+          Value: !Sub '${ProjectName}-alb-${Environment}'
         - Key: Environment
           Value: !Ref Environment
 
@@ -113,7 +115,7 @@ Resources:
           Description: HTTPS traffic
       Tags:
         - Key: Name
-          Value: !Sub '${ProjectName}-streamlit-alb-sg'
+          Value: !Sub '${ProjectName}-alb-sg-${Environment}'
 
   # ECS Task Security Group
   ECSSecurityGroup:
@@ -253,7 +255,7 @@ Resources:
   # ECS Task Definition for each environment
   StreamlitTaskDefinitionDev:
     Type: AWS::ECS::TaskDefinition
-    Condition: !Equals [!Ref Environment, "dev"]
+    Condition: IsDev
     Properties:
       Family: !Sub 'streamlit-app-${Environment}'
       NetworkMode: awsvpc
@@ -303,7 +305,7 @@ Resources:
 
   StreamlitTaskDefinitionStaging:
     Type: AWS::ECS::TaskDefinition
-    Condition: !Equals [!Ref Environment, "staging"]
+    Condition: IsStaging
     Properties:
       Family: !Sub 'streamlit-app-${Environment}'
       NetworkMode: awsvpc
@@ -353,7 +355,7 @@ Resources:
 
   StreamlitTaskDefinitionProd:
     Type: AWS::ECS::TaskDefinition
-    Condition: !Equals [!Ref Environment, "prod"]
+    Condition: IsProduction
     Properties:
       Family: !Sub 'streamlit-app-${Environment}'
       NetworkMode: awsvpc
@@ -409,10 +411,10 @@ Resources:
       ServiceName: !Sub 'streamlit-app-${Environment}'
       Cluster: !Ref ECSCluster
       TaskDefinition: !If
-        - !Equals [!Ref Environment, "dev"]
+        - IsDev
         - !Ref StreamlitTaskDefinitionDev
         - !If
-          - !Equals [!Ref Environment, "staging"]
+          - IsStaging
           - !Ref StreamlitTaskDefinitionStaging
           - !Ref StreamlitTaskDefinitionProd
       DesiredCount: !If [IsProduction, 2, 1]

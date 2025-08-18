@@ -33,6 +33,8 @@ Key patterns:
 - **Report Service** (`python-report-service/`): FastAPI REST API with async background job processing
 - **Analytics UI** (`streamlit-app/`): Streamlit interface with Cortex Analyst integration
 - **Infrastructure** (`aws-infrastructure/`): ECS deployment configurations
+  - **Terraform** (`streamlit-ecs/terraform/`): Modern Infrastructure as Code (recommended)
+  - **CloudFormation** (`streamlit-ecs/`): Legacy AWS-native deployment
 
 ## Development Commands
 
