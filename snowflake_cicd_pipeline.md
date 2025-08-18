@@ -1,538 +1,443 @@
-# Snowflake CI/CD Pipeline with CREATE OR ALTER Commands
+# Modern Snowflake CI/CD Pipeline for 30-Person Team
 
-## Repository Structure (Mono-repo)
+## Executive Summary
+
+This document outlines a modern, scalable CI/CD pipeline for Snowflake deployments designed for a 30-person development team. The pipeline leverages GitHub Actions, CREATE OR ALTER commands for idempotent deployments, a single branch strategy, and mono-repo architecture to ensure reliable, consistent, and safe database deployments across multiple environments.
+
+## Key Architecture Principles
+
+### Single Branch Strategy
+- **Main Branch Only**: All development happens on feature branches that merge to `main`
+- **Environment Promotion**: `feature/*` → DEV → `main` → STAGING → Manual → PROD
+- **No Long-Running Branches**: Eliminates merge conflicts and integration issues
+- **Continuous Integration**: Every commit is validated and deployable
+
+### CREATE OR ALTER Pattern
+- **Idempotent Operations**: Safe to run multiple times without side effects
+- **Zero Downtime**: Objects are altered, not dropped and recreated
+- **State Management**: Database schema evolves incrementally
+- **Dependency Safe**: Preserves object relationships and permissions
+
+### Mono-Repo Structure
+- **Single Source of Truth**: All Snowflake objects in one repository
+- **Atomic Changes**: Related changes deployed together
+- **Consistent Versioning**: Single version across all database components
+- **Team Collaboration**: Shared standards and practices
+
+## Repository Structure (Mono-repo for 30-Person Team)
 
 ```
-snowflake-data-platform/
+SnowflakeSolutions/
 ├── .github/
-│   └── workflows/
-│       ├── ci.yml
-│       ├── cd-dev.yml
-│       ├── cd-staging.yml
-│       └── cd-prod.yml
-├── databases/
-│   ├── analytics/
-│   │   ├── schemas/
-│   │   │   ├── raw/
-│   │   │   ├── staging/
-│   │   │   └── marts/
-│   │   ├── tables/
-│   │   ├── views/
-│   │   ├── functions/
-│   │   └── procedures/
-│   └── finance/
-│       └── (similar structure)
-├── shared/
-│   ├── warehouses/
-│   ├── roles/
-│   ├── users/
-│   └── resource_monitors/
+│   ├── workflows/
+│   │   └── snowflake-deployment.yml       # Main deployment pipeline
+│   ├── deployment-config.yml              # Schema deployment configuration
+│   └── CODEOWNERS                         # Code ownership by team/schema
+├── sql/
+│   ├── schemas/
+│   │   ├── 00_database_and_warehouse.sql  # Foundation objects
+│   │   ├── monitoring/                    # System monitoring schema
+│   │   │   ├── tables.sql
+│   │   │   └── stored_procedures.sql
+│   │   ├── raw_data/                      # Raw data ingestion schema
+│   │   │   ├── tables.sql
+│   │   │   ├── streams.sql
+│   │   │   ├── tasks.sql
+│   │   │   └── procedures.sql
+│   │   ├── processed_data/                # Analytics schema
+│   │   │   ├── tables.sql
+│   │   │   └── procedures.sql
+│   │   ├── reporting/                     # Reporting schema
+│   │   │   └── views.sql
+│   │   └── permissions.sql               # Role-based access control
+│   └── 02_sample_data.sql                # Sample data for development
 ├── tests/
-│   ├── unit/
-│   ├── integration/
-│   └── data_quality/
+│   ├── unit/                             # Unit tests for procedures/functions
+│   ├── integration/                      # Cross-schema integration tests
+│   └── data_quality/                     # Data quality validation tests
+├── docs/
+│   ├── schema_documentation/             # Schema documentation
+│   ├── deployment_guides/                # Deployment procedures
+│   └── team_workflows/                   # Team collaboration guides
 ├── scripts/
-│   ├── deploy.py
-│   ├── rollback.py
-│   └── validate.py
-├── config/
-│   ├── dev.yml
-│   ├── staging.yml
-│   └── prod.yml
-├── dbt_project.yml (if using dbt)
-├── requirements.txt
-└── README.md
+│   └── deployment/                       # Deployment utilities
+├── CLAUDE.md                             # AI assistant instructions
+├── README.md                             # Project overview
+└── .gitignore
 ```
 
-## GitHub Actions Workflow
+## Team Collaboration Structure (30 People)
 
-### 1. Continuous Integration (.github/workflows/ci.yml)
+### Code Ownership (CODEOWNERS)
+```
+# Schema ownership by team
+/sql/schemas/monitoring/          @data-platform-team
+/sql/schemas/raw_data/           @data-engineering-team
+/sql/schemas/processed_data/     @analytics-team @data-engineering-team
+/sql/schemas/reporting/          @analytics-team @business-intelligence-team
 
-```yaml
-name: Snowflake CI Pipeline
-
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-
-env:
-  SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-  SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
-  SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-  SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
-  SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-
-jobs:
-  lint-and-validate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install sqlfluff pre-commit
-      
-      - name: SQL Linting
-        run: |
-          sqlfluff lint databases/ --dialect snowflake
-      
-      - name: Validate SQL Syntax
-        run: |
-          python scripts/validate.py --check-syntax
-      
-      - name: Security Scan
-        run: |
-          python scripts/validate.py --security-scan
-
-  unit-tests:
-    runs-on: ubuntu-latest
-    needs: lint-and-validate
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      
-      - name: Run Unit Tests
-        run: |
-          python -m pytest tests/unit/ -v
-      
-      - name: Test CREATE OR ALTER Statements
-        run: |
-          python scripts/validate.py --test-create-or-alter
-
-  deploy-to-dev:
-    runs-on: ubuntu-latest
-    needs: [lint-and-validate, unit-tests]
-    if: github.ref == 'refs/heads/main'
-    environment: development
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      
-      - name: Deploy to Development
-        run: |
-          python scripts/deploy.py --environment dev --use-create-or-alter
-        env:
-          SNOWFLAKE_DATABASE: DEV_DATABASE
-      
-      - name: Run Integration Tests
-        run: |
-          python -m pytest tests/integration/ -v --env=dev
-      
-      - name: Data Quality Tests
-        run: |
-          python -m pytest tests/data_quality/ -v --env=dev
+# Infrastructure ownership
+/.github/                        @devops-team @data-platform-team
+/scripts/                       @devops-team
 ```
 
-### 2. Continuous Deployment - Staging (.github/workflows/cd-staging.yml)
+### Branch Protection Rules
+- **Main Branch**: Requires 2 approvals from CODEOWNERS
+- **Auto-merge**: Enabled for approved PRs
+- **Status Checks**: All CI checks must pass
+- **Up-to-date**: Branches must be current with main
+
+### Team Development Workflow
+1. **Feature Development**: Developers work on `feature/JIRA-123-description` branches
+2. **Pull Request**: Creates PR against main branch
+3. **Automated Testing**: CI pipeline runs on PR (dry run to DEV)
+4. **Code Review**: Team members review and approve
+5. **Auto-Deploy**: Merge to main triggers STAGING deployment
+6. **Production**: Manual approval required for PROD deployment
+
+## GitHub Actions Pipeline (.github/workflows/snowflake-deployment.yml)
+
+### Pipeline Overview
+
+The pipeline consists of 6 main jobs:
+
+1. **Setup**: Determines deployment parameters based on trigger
+2. **Validate**: Performs SQL validation and safety checks  
+3. **Approval**: Requires manual approval for STAGING/PROD
+4. **Deploy**: Executes the Snowflake deployment
+5. **Load Sample Data**: Optional sample data loading
+6. **Notify**: Sends deployment notifications
+
+### Trigger Strategy
 
 ```yaml
-name: Deploy to Staging
-
 on:
-  workflow_run:
-    workflows: ["Snowflake CI Pipeline"]
-    types:
-      - completed
-    branches: [main]
-
-env:
-  SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-  SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
-  SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-  SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
-  SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-
-jobs:
-  deploy-staging:
-    runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    environment: staging
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      
-      - name: Deploy to Staging
-        run: |
-          python scripts/deploy.py --environment staging --use-create-or-alter
-        env:
-          SNOWFLAKE_DATABASE: STAGING_DATABASE
-      
-      - name: Run Staging Tests
-        run: |
-          python -m pytest tests/integration/ -v --env=staging
-          python -m pytest tests/data_quality/ -v --env=staging
-      
-      - name: Performance Tests
-        run: |
-          python scripts/validate.py --performance-test --env=staging
-```
-
-### 3. Production Deployment (.github/workflows/cd-prod.yml)
-
-```yaml
-name: Deploy to Production
-
-on:
+  # Manual deployment with environment selection
   workflow_dispatch:
     inputs:
-      confirm_deployment:
-        description: 'Type "DEPLOY" to confirm production deployment'
-        required: true
-        default: ''
-
-env:
-  SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-  SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
-  SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-  SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
-  SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-
-jobs:
-  deploy-production:
-    runs-on: ubuntu-latest
-    if: github.event.inputs.confirm_deployment == 'DEPLOY'
-    environment: production
-    steps:
-      - uses: actions/checkout@v4
+      target_environment: [DEV, STAGING, PROD]
+      deployment_mode: [INCREMENTAL, FULL, SCHEMA_SPECIFIC]
+      target_schemas: "comma-separated list"
+      dry_run: boolean
+      load_sample_data: boolean
       
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      
-      - name: Pre-deployment Validation
-        run: |
-          python scripts/validate.py --pre-prod-check --env=production
-      
-      - name: Create Backup
-        run: |
-          python scripts/deploy.py --create-backup --environment production
-      
-      - name: Deploy to Production
-        run: |
-          python scripts/deploy.py --environment production --use-create-or-alter
-        env:
-          SNOWFLAKE_DATABASE: PROD_DATABASE
-      
-      - name: Post-deployment Tests
-        run: |
-          python -m pytest tests/integration/ -v --env=production
-          python scripts/validate.py --post-deployment-check --env=production
-      
-      - name: Rollback on Failure
-        if: failure()
-        run: |
-          python scripts/rollback.py --environment production
+  # Branch-based auto deployment
+  push:
+    branches: [ main, 'feature/**', 'feat/**', 'dev/**' ]
+    paths: [ 'sql/**' ]
+    
+  # PR validation (always DEV dry run)
+  pull_request:
+    branches: [ main ]
+    paths: [ 'sql/**' ]
 ```
 
-## Deployment Script (scripts/deploy.py)
+### Environment Routing Logic
+
+| Trigger | Branch | Target Environment | Mode |
+|---------|--------|-------------------|------|
+| Push | `main` | STAGING | INCREMENTAL |
+| Push | `feature/*`, `feat/*`, `dev/*` | DEV | INCREMENTAL |
+| Pull Request | Any → `main` | DEV | DRY RUN |
+| Manual | Any | User Choice | User Choice |
+
+### Deployment Modes
+
+#### INCREMENTAL (Default)
+- **Git Diff Analysis**: Detects changed SQL files since last commit
+- **Dependency Resolution**: Automatically includes dependent schemas
+- **Smart Deployment**: Only deploys what changed
+- **Performance**: Fastest deployment for regular development
+
+#### FULL
+- **Complete Deployment**: All schemas and files
+- **Clean State**: Ensures complete consistency
+- **Use Cases**: Major releases, environment rebuilds
+- **Safety**: Comprehensive validation
+
+#### SCHEMA_SPECIFIC
+- **Targeted Deployment**: User-specified schemas only
+- **Dependency Inclusion**: Automatically adds required dependencies
+- **Use Cases**: Hotfixes, targeted updates
+- **Flexibility**: Granular control
+
+### Intelligent Change Detection
+
+The pipeline automatically detects which schemas need deployment:
 
 ```python
-#!/usr/bin/env python3
-"""
-Snowflake deployment script using CREATE OR ALTER commands
-"""
+# Foundation changes affect all schemas
+if 'schemas/00_database_and_warehouse.sql' in changed_files:
+    deploy_all_schemas()
 
-import os
-import argparse
-import yaml
-import snowflake.connector
-from pathlib import Path
-import logging
-from typing import Dict, List, Tuple
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-class SnowflakeDeployer:
-    def __init__(self, config: Dict):
-        self.config = config
-        self.connection = None
-        
-    def connect(self):
-        """Establish Snowflake connection"""
-        try:
-            self.connection = snowflake.connector.connect(
-                account=os.getenv('SNOWFLAKE_ACCOUNT'),
-                user=os.getenv('SNOWFLAKE_USER'),
-                password=os.getenv('SNOWFLAKE_PASSWORD'),
-                role=os.getenv('SNOWFLAKE_ROLE'),
-                warehouse=os.getenv('SNOWFLAKE_WAREHOUSE'),
-                database=self.config['database']
-            )
-            logger.info(f"Connected to Snowflake database: {self.config['database']}")
-        except Exception as e:
-            logger.error(f"Failed to connect to Snowflake: {e}")
-            raise
-            
-    def execute_sql_file(self, file_path: Path) -> bool:
-        """Execute SQL file using CREATE OR ALTER pattern"""
-        try:
-            with open(file_path, 'r') as file:
-                sql_content = file.read()
-                
-            # Split multiple statements
-            statements = [stmt.strip() for stmt in sql_content.split(';') if stmt.strip()]
-            
-            cursor = self.connection.cursor()
-            for statement in statements:
-                if statement:
-                    # Convert CREATE statements to CREATE OR ALTER where applicable
-                    statement = self.convert_to_create_or_alter(statement)
-                    logger.info(f"Executing: {statement[:100]}...")
-                    cursor.execute(statement)
-                    
-            cursor.close()
-            logger.info(f"Successfully executed: {file_path}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to execute {file_path}: {e}")
-            return False
-            
-    def convert_to_create_or_alter(self, statement: str) -> str:
-        """Convert CREATE statements to CREATE OR ALTER where supported"""
-        statement_upper = statement.upper().strip()
-        
-        # Objects that support CREATE OR ALTER in Snowflake
-        supported_objects = [
-            'TABLE', 'VIEW', 'MATERIALIZED VIEW', 'STREAM', 'TASK',
-            'STAGE', 'FILE FORMAT', 'FUNCTION', 'PROCEDURE', 'SCHEMA',
-            'DATABASE', 'WAREHOUSE', 'RESOURCE MONITOR'
-        ]
-        
-        for obj_type in supported_objects:
-            if statement_upper.startswith(f'CREATE {obj_type}'):
-                statement = statement.replace(f'CREATE {obj_type}', f'CREATE OR ALTER {obj_type}', 1)
-                break
-                
-        return statement
-        
-    def deploy_databases(self) -> bool:
-        """Deploy database objects in dependency order"""
-        deployment_order = [
-            'databases',
-            'shared/warehouses',
-            'shared/roles',
-            'shared/resource_monitors',
-            'databases/*/schemas',
-            'databases/*/tables',
-            'databases/*/views',
-            'databases/*/functions',
-            'databases/*/procedures'
-        ]
-        
-        success = True
-        for pattern in deployment_order:
-            sql_files = list(Path('.').glob(f'{pattern}/**/*.sql'))
-            for sql_file in sorted(sql_files):
-                if not self.execute_sql_file(sql_file):
-                    success = False
-                    
-        return success
-        
-    def create_backup(self):
-        """Create backup of current state"""
-        cursor = self.connection.cursor()
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        
-        # Clone database for backup
-        backup_db = f"{self.config['database']}_BACKUP_{timestamp}"
-        cursor.execute(f"CREATE DATABASE {backup_db} CLONE {self.config['database']}")
-        
-        logger.info(f"Backup created: {backup_db}")
-        cursor.close()
-
-def main():
-    parser = argparse.ArgumentParser(description='Deploy Snowflake objects')
-    parser.add_argument('--environment', required=True, choices=['dev', 'staging', 'production'])
-    parser.add_argument('--use-create-or-alter', action='store_true', help='Use CREATE OR ALTER statements')
-    parser.add_argument('--create-backup', action='store_true', help='Create backup before deployment')
-    
-    args = parser.parse_args()
-    
-    # Load environment config
-    with open(f'config/{args.environment}.yml', 'r') as file:
-        config = yaml.safe_load(file)
-    
-    deployer = SnowflakeDeployer(config)
-    deployer.connect()
-    
-    if args.create_backup:
-        deployer.create_backup()
-    
-    success = deployer.deploy_databases()
-    
-    if success:
-        logger.info("Deployment completed successfully")
-        exit(0)
-    else:
-        logger.error("Deployment failed")
-        exit(1)
-
-if __name__ == "__main__":
-    main()
+# Schema-specific changes
+for file_path in changed_files:
+    if 'schemas/monitoring/' in file_path:
+        deploy(['monitoring'])
+    elif 'schemas/raw_data/' in file_path:
+        deploy(['raw_data', 'processed_data', 'reporting'])  # Dependents
+    # ... etc
 ```
 
-## Example SQL Files Using CREATE OR ALTER
+## CREATE OR ALTER Implementation
 
-### Database Schema (databases/analytics/schemas/raw.sql)
+### Idempotent Patterns
+
+All database objects use CREATE OR ALTER for safe, repeatable deployments:
+
 ```sql
--- Create or alter database
-CREATE OR ALTER DATABASE ANALYTICS_DB;
+-- Database and Warehouse
+CREATE OR ALTER DATABASE analytics_platform;
+CREATE OR ALTER WAREHOUSE analytics_wh 
+    WITH WAREHOUSE_SIZE='SMALL' AUTO_SUSPEND=300;
 
--- Create or alter schema
-CREATE OR ALTER SCHEMA ANALYTICS_DB.RAW
-    COMMENT = 'Raw data ingestion layer';
-
--- Set default schema properties
-ALTER SCHEMA IF EXISTS ANALYTICS_DB.RAW 
-SET DATA_RETENTION_TIME_IN_DAYS = 7;
-```
-
-### Table Definition (databases/analytics/tables/customers.sql)
-```sql
-USE SCHEMA ANALYTICS_DB.RAW;
-
-CREATE OR ALTER TABLE customers (
-    customer_id NUMBER(38,0) NOT NULL,
-    first_name VARCHAR(50),
-    last_name VARCHAR(50),
-    email VARCHAR(100),
-    phone VARCHAR(20),
+-- Tables with schema evolution
+CREATE OR ALTER TABLE raw_data.orders (
+    order_id NUMBER(38,0) NOT NULL,
+    customer_id NUMBER(38,0),
+    order_date DATE,
+    order_amount DECIMAL(10,2),
+    status VARCHAR(20),
+    -- New columns added here are safe
     created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-    updated_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-    is_active BOOLEAN DEFAULT TRUE,
-    CONSTRAINT pk_customers PRIMARY KEY (customer_id)
-)
-COMMENT = 'Customer master data table';
+    CONSTRAINT pk_orders PRIMARY KEY (order_id)
+);
 
--- Add or modify table properties
-ALTER TABLE IF EXISTS customers 
-SET DATA_RETENTION_TIME_IN_DAYS = 30;
-```
-
-### View Definition (databases/analytics/views/active_customers.sql)
-```sql
-USE SCHEMA ANALYTICS_DB.MARTS;
-
-CREATE OR ALTER VIEW active_customers AS
+-- Views are always CREATE OR REPLACE (equivalent pattern)
+CREATE OR REPLACE VIEW reporting.sales_summary AS
 SELECT 
-    customer_id,
-    first_name,
-    last_name,
-    email,
-    phone,
-    created_at,
-    updated_at
-FROM ANALYTICS_DB.RAW.customers
-WHERE is_active = TRUE
-COMMENT = 'View of active customers only';
+    DATE_TRUNC('month', order_date) as month,
+    SUM(order_amount) as total_sales,
+    COUNT(*) as order_count
+FROM raw_data.orders
+WHERE status = 'completed'
+GROUP BY 1;
+
+-- Procedures and Functions
+CREATE OR REPLACE PROCEDURE processed_data.refresh_customer_metrics()
+RETURNS STRING
+LANGUAGE SQL
+AS $$
+BEGIN
+    MERGE INTO processed_data.customer_metrics...
+    RETURN 'Success';
+END;
+$$;
 ```
 
-## Configuration Files
+### Schema Dependency Management
 
-### Development Config (config/dev.yml)
+Deployment follows strict dependency order defined in `.github/deployment-config.yml`:
+
 ```yaml
-database: DEV_ANALYTICS_DB
-warehouse: DEV_WH
-role: DEV_ROLE
-environment: development
-data_retention_days: 7
-auto_suspend_minutes: 5
-
-features:
-  create_or_alter: true
-  backup_before_deploy: false
-  run_tests: true
-
-notifications:
-  slack_webhook: ${SLACK_WEBHOOK_DEV}
+deployment:
+  schemas:
+    - name: "monitoring"        # No dependencies
+      dependencies: []
+      
+    - name: "raw_data"         # Depends on monitoring
+      dependencies: ["monitoring"]
+      
+    - name: "processed_data"   # Depends on monitoring + raw_data
+      dependencies: ["monitoring", "raw_data"]
+      
+    - name: "reporting"        # Depends on all previous
+      dependencies: ["monitoring", "raw_data", "processed_data"]
 ```
 
-### Production Config (config/prod.yml)
-```yaml
-database: PROD_ANALYTICS_DB
-warehouse: PROD_WH
-role: PROD_ROLE
-environment: production
-data_retention_days: 90
-auto_suspend_minutes: 10
+## Environment Configuration
 
-features:
-  create_or_alter: true
-  backup_before_deploy: true
-  run_tests: true
+### Environment-Specific Settings
 
-notifications:
-  slack_webhook: ${SLACK_WEBHOOK_PROD}
-  email_alerts: true
+| Environment | Database | Warehouse | Data Retention | Auto-Suspend |
+|-------------|----------|-----------|---------------|---------------|
+| DEV | `analytics_platform_dev` | `analytics_wh_dev` | 7 days | 5 minutes |
+| STAGING | `analytics_platform_staging` | `analytics_wh_staging` | 30 days | 10 minutes |
+| PROD | `analytics_platform` | `analytics_wh` | 90 days | 60 minutes |
+
+### GitHub Secrets Management
+
+Required secrets per environment:
+```
+# Development
+SNOWFLAKE_DEV_ACCOUNT
+SNOWFLAKE_DEV_USER
+SNOWFLAKE_DEV_PASSWORD
+
+# Staging  
+SNOWFLAKE_STAGING_ACCOUNT
+SNOWFLAKE_STAGING_USER
+SNOWFLAKE_STAGING_PASSWORD
+
+# Production
+SNOWFLAKE_PROD_ACCOUNT
+SNOWFLAKE_PROD_USER
+SNOWFLAKE_PROD_PASSWORD
 ```
 
-## Requirements (requirements.txt)
+## Security and Compliance
+
+### Role-Based Access Control
+```sql
+-- Schema-specific roles
+CREATE OR ALTER ROLE raw_data_read;
+CREATE OR ALTER ROLE raw_data_write;
+CREATE OR ALTER ROLE reporting_read;
+
+-- Grant permissions
+GRANT USAGE ON SCHEMA raw_data TO ROLE raw_data_read;
+GRANT SELECT ON ALL TABLES IN SCHEMA raw_data TO ROLE raw_data_read;
+GRANT USAGE, CREATE TABLE ON SCHEMA raw_data TO ROLE raw_data_write;
 ```
-snowflake-connector-python>=3.7.0
-PyYAML>=6.0
-pytest>=7.0.0
-sqlfluff>=2.0.0
-pre-commit>=3.0.0
-requests>=2.28.0
+
+### Audit and Monitoring
+```sql
+-- Deployment tracking
+CREATE OR REPLACE TABLE monitoring.github_deployments (
+    run_id VARCHAR(50),
+    deployment_time TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    environment VARCHAR(50),
+    git_sha VARCHAR(50),
+    deployment_mode VARCHAR(50),
+    actor VARCHAR(100),
+    files_deployed NUMBER,
+    status VARCHAR(20)
+);
 ```
 
-## Key Features
+### Safety Features
+- **Dry Run Mode**: Preview changes without execution
+- **Approval Gates**: Manual approval for STAGING/PROD
+- **Rollback Capability**: Database cloning for recovery
+- **Change Validation**: Pre-deployment safety checks
+- **Deployment Tracking**: Complete audit trail
 
-### Modern Engineering Principles
-1. **Single Branch Strategy**: All changes go through main branch with proper CI/CD gates
-2. **Mono-repo Structure**: All Snowflake objects organized in a single repository
-3. **Infrastructure as Code**: All database objects defined in version-controlled SQL files
-4. **CREATE OR ALTER Pattern**: Idempotent deployments using Snowflake's new commands
-5. **Automated Testing**: Unit, integration, and data quality tests
-6. **Progressive Deployment**: Dev → Staging → Production pipeline
-7. **Rollback Capability**: Automated rollback on deployment failures
+## Team Best Practices (30-Person Team)
 
-### CREATE OR ALTER Benefits
-- **Idempotent Operations**: Safe to run multiple times
-- **Zero Downtime**: Alters existing objects without dropping
-- **Simplified Logic**: No need for complex DROP/CREATE scripts
-- **Better Change Management**: Preserves object history and dependencies
+### Development Workflow
+1. **Feature Branches**: Use descriptive branch names (`feature/JIRA-123-add-customer-metrics`)
+2. **Small Changes**: Keep PRs focused and reviewable
+3. **Schema Changes**: Document breaking changes in PR description
+4. **Testing**: Include tests for new procedures and functions
+5. **Review Process**: Minimum 2 reviewers from relevant teams
 
-### Security & Compliance
-- Environment-specific configurations
-- Secrets management through GitHub Actions
-- Backup creation before production deployments
-- Audit logging of all changes
-- Role-based access control
+### Code Standards
+```sql
+-- Naming conventions
+-- Tables: snake_case, plural nouns (customers, order_items)
+-- Views: snake_case, descriptive (customer_metrics, sales_summary)  
+-- Procedures: snake_case, action verbs (refresh_metrics, load_daily_data)
+-- Columns: snake_case, descriptive (customer_id, created_at)
 
-This pipeline provides a robust, modern approach to managing Snowflake data warehouses with automated deployments, comprehensive testing, and the latest CREATE OR ALTER functionality.
+-- Documentation
+CREATE OR ALTER TABLE raw_data.customers (
+    customer_id NUMBER(38,0) NOT NULL COMMENT 'Unique customer identifier',
+    first_name VARCHAR(50) COMMENT 'Customer first name',
+    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP() COMMENT 'Record creation timestamp'
+) COMMENT = 'Customer master data table - updated daily via ETL';
+```
+
+### Conflict Resolution
+- **Schema Conflicts**: Use CODEOWNERS for automatic reviewer assignment
+- **Merge Conflicts**: Rebase feature branches regularly
+- **Deployment Conflicts**: Coordinate through team channels
+- **Emergency Changes**: Use hotfix branches with expedited review
+
+## Performance and Scalability
+
+### Pipeline Optimization
+- **Parallel Execution**: Independent schemas deploy concurrently
+- **Change Detection**: Only deploy modified components
+- **Caching**: Reuse connections and contexts
+- **Resource Management**: Right-sized warehouses per environment
+
+### Large Team Considerations
+- **Concurrent Development**: Feature branch isolation
+- **Review Distribution**: CODEOWNERS spreads review load
+- **Deployment Queuing**: GitHub Actions handles concurrent builds
+- **Resource Limits**: Environment-specific warehouse sizing
+
+## Monitoring and Observability
+
+### Deployment Metrics
+```sql
+-- Deployment success rates
+SELECT 
+    environment,
+    DATE_TRUNC('day', deployment_time) as date,
+    COUNT(*) as total_deployments,
+    COUNT_IF(status = 'SUCCESS') as successful_deployments,
+    (successful_deployments / total_deployments) * 100 as success_rate
+FROM monitoring.github_deployments
+GROUP BY 1, 2
+ORDER BY 2 DESC;
+
+-- Deployment frequency by team
+SELECT 
+    actor,
+    COUNT(*) as deployments,
+    MAX(deployment_time) as last_deployment
+FROM monitoring.github_deployments
+GROUP BY 1
+ORDER BY 2 DESC;
+```
+
+### Pipeline Observability
+- **GitHub Actions Logs**: Detailed execution logs per step
+- **Deployment Artifacts**: SQL validation and execution reports
+- **Step Summary**: Visual deployment progress in GitHub UI
+- **Notification Integration**: Slack/Teams notifications on failure
+
+## Troubleshooting Guide
+
+### Common Issues
+1. **Schema Dependencies**: Ensure proper order in deployment-config.yml
+2. **Permission Errors**: Verify role assignments in permissions.sql
+3. **Syntax Errors**: Use SQL validation in CI pipeline
+4. **Environment Secrets**: Check GitHub secrets configuration
+5. **Git Conflicts**: Rebase feature branches before merging
+
+### Recovery Procedures
+1. **Failed Deployment**: Check logs, fix issue, re-run deployment
+2. **Data Corruption**: Use backup databases for recovery
+3. **Schema Conflicts**: Coordinate with team, resolve manually
+4. **Emergency Rollback**: Use database cloning for quick recovery
+
+## Migration Strategy
+
+### From Existing Pipeline
+1. **Assessment**: Inventory current database objects and dependencies
+2. **Schema Organization**: Reorganize objects into logical schemas  
+3. **CREATE OR ALTER**: Convert existing CREATE statements
+4. **Testing**: Validate new pipeline in development environment
+5. **Team Training**: Train developers on new workflow
+6. **Gradual Rollout**: Migrate one schema at a time
+
+### Team Onboarding
+1. **Documentation**: Complete schema and workflow documentation
+2. **Training Sessions**: Regular team training on new processes
+3. **Pair Programming**: Senior developers mentor new team members
+4. **Best Practices**: Establish and document coding standards
+5. **Feedback Loop**: Regular retrospectives to improve processes
+
+## Key Benefits
+
+### For Development Teams
+- **Fast Feedback**: Immediate validation on feature branches  
+- **Safe Changes**: Idempotent deployments prevent accidents
+- **Clear Ownership**: CODEOWNERS ensures proper review
+- **Flexible Deployment**: Multiple modes for different scenarios
+
+### For Operations Teams
+- **Reliable Deployments**: Consistent, repeatable process
+- **Full Traceability**: Complete audit trail of all changes
+- **Environment Consistency**: Same process across all environments
+- **Emergency Response**: Quick rollback and recovery procedures
+
+### For Business Teams
+- **Faster Time-to-Market**: Streamlined deployment process
+- **Higher Quality**: Comprehensive testing and validation  
+- **Better Collaboration**: Clear processes and responsibilities
+- **Risk Reduction**: Safe, controlled database changes
+
+This modern Snowflake CI/CD pipeline provides a robust, scalable foundation for a 30-person development team, ensuring reliable database deployments while maintaining development velocity and code quality.
