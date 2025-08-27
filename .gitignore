@@ -28,6 +28,7 @@ config.json
 .snowsql/
 snowsql_rt.log*
 connections.toml
+.github/SETUP-COMMANDS.sh 
 
 # Jenkins secrets and configs
 jenkins/.env
