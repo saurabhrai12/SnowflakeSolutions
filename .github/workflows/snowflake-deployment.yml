@@ -343,6 +343,21 @@ jobs:
             snow sql -f Account/snowflake/schemas/00_database_and_warehouse.sql --connection default
           fi
           
+          # Ensure we're using the correct database context after foundation deployment
+          echo "🔧 Setting database context to: ${{ needs.setup.outputs.snowflake_database }}"
+          snow sql -q "USE DATABASE ${{ needs.setup.outputs.snowflake_database }}" --connection default
+          
+          # Deploy monitoring schema first to create deployment tracking
+          echo "📊 Deploying monitoring schema..."
+          MONITORING_FILES_DEPLOYED=0
+          for file in Customer/snowflake/monitoring/*.sql; do
+            if [ -f "$file" ]; then
+              echo "  📊 Executing: $file"
+              snow sql -f "$file" --connection default
+              MONITORING_FILES_DEPLOYED=$((MONITORING_FILES_DEPLOYED + 1))
+            fi
+          done
+          
           # Deployment logic based on changed files and deployment mode
           DEPLOYMENT_MODE="${{ needs.setup.outputs.deployment_mode }}"
           TARGET_SCHEMAS="${{ needs.setup.outputs.target_schemas }}"
@@ -352,8 +367,8 @@ jobs:
           echo "📋 Target Schemas: $TARGET_SCHEMAS"
           echo "📋 Changed Files: $CHANGED_FILES"
           
-          # Create deployment tracking table
-          echo "📊 Creating deployment tracking..."
+          # Create deployment tracking table (now monitoring schema should exist)
+          echo "📊 Creating deployment tracking table..."
           snow sql -q "CREATE OR REPLACE TABLE monitoring.github_deployments (
             run_id VARCHAR(50),
             deployment_time TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
@@ -369,19 +384,11 @@ jobs:
           SCHEMAS_ORDER=("monitoring" "raw_data" "processed_data" "reporting")
           
           # Deploy schemas based on mode
-          FILES_DEPLOYED=0
+          FILES_DEPLOYED=$MONITORING_FILES_DEPLOYED
           
           if [ "$DEPLOYMENT_MODE" = "FULL" ] || [ -z "$TARGET_SCHEMAS" ]; then
-            echo "💯 Full deployment - deploying all schemas"
-            
-            # Deploy monitoring schema
-            for file in Customer/snowflake/monitoring/*.sql; do
-              if [ -f "$file" ]; then
-                echo "  📊 Executing: $file"
-                snow sql -f "$file" --connection default
-                FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
-              fi
-            done
+            echo "💯 Full deployment - deploying remaining schemas"
+            echo "  (monitoring schema already deployed)"
             
             # Deploy raw_data schema
             for file in Account/snowflake/schemas/raw_data/*.sql; do
