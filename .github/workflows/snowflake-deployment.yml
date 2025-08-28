@@ -248,7 +248,7 @@ jobs:
       - name: 🔌 Test Snowflake Connection
         run: |
           echo "🔌 Testing Snowflake connection with CLI..."
-          snow connection test --connection-name default
+          snow connection test --connection default
           echo "✅ Snowflake CLI connection successful"
           
       - name: 🔍 Detect Changed Files
