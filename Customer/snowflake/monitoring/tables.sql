@@ -15,6 +15,7 @@ CREATE OR ALTER TABLE api_calls (
     response_timestamp TIMESTAMP_NTZ,
     status STRING DEFAULT 'INITIATED',
     http_status_code NUMBER,
+    port NUMBER,
     retry_count NUMBER DEFAULT 0,
     error_message STRING,
     execution_time_ms NUMBER
