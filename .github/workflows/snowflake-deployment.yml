@@ -243,6 +243,7 @@ jobs:
           warehouse = "${{ needs.setup.outputs.snowflake_warehouse }}"
           database = "${{ needs.setup.outputs.snowflake_database }}"
           EOF
+          chmod 0600 ~/.snowflake/config.toml
           
       - name: 🔌 Test Snowflake Connection
         run: |
@@ -561,6 +562,7 @@ jobs:
           warehouse = "${{ needs.setup.outputs.snowflake_warehouse }}"
           database = "${{ needs.setup.outputs.snowflake_database }}"
           EOF
+          chmod 0600 ~/.snowflake/config.toml
           
       - name: 📊 Load Sample Data with Snowflake CLI
         run: |
