@@ -225,443 +225,223 @@ jobs:
         with:
           fetch-depth: 0  # Fetch all history for git diff
         
-      - name: 🔧 Install Dependencies
+      - name: 🔧 Install Snowflake CLI
+        uses: snowflakedb/snowflake-cli-action@v1.5
+        with:
+          cli-version: "latest"
+          default-config-file-path: "snowflake-config.toml"
+          
+      - name: 📝 Create Snowflake Configuration
         run: |
-          echo "📦 Installing Python dependencies..."
-          pip install snowflake-connector-python
+          echo "📝 Creating Snowflake CLI configuration..."
+          mkdir -p ~/.snowflake
+          cat > ~/.snowflake/config.toml << EOF
+          [connections.default]
+          account = "${{ secrets[format('SNOWFLAKE_{0}_ACCOUNT', needs.setup.outputs.target_environment)] }}"
+          user = "${{ secrets[format('SNOWFLAKE_{0}_USER', needs.setup.outputs.target_environment)] }}"
+          password = "${{ secrets[format('SNOWFLAKE_{0}_PASSWORD', needs.setup.outputs.target_environment)] }}"
+          warehouse = "${{ needs.setup.outputs.snowflake_warehouse }}"
+          database = "${{ needs.setup.outputs.snowflake_database }}"
+          EOF
           
       - name: 🔌 Test Snowflake Connection
-        env:
-          SNOWFLAKE_ACCOUNT: ${{ secrets[format('SNOWFLAKE_{0}_ACCOUNT', needs.setup.outputs.target_environment)] }}
-          SNOWFLAKE_USER: ${{ secrets[format('SNOWFLAKE_{0}_USER', needs.setup.outputs.target_environment)] }}
-          SNOWFLAKE_PASSWORD: ${{ secrets[format('SNOWFLAKE_{0}_PASSWORD', needs.setup.outputs.target_environment)] }}
         run: |
-          echo "🔌 Testing Snowflake connection..."
-          python3 << 'EOF'
-          import snowflake.connector
-          import os
+          echo "🔌 Testing Snowflake connection with CLI..."
+          snow connection test --connection-name default
+          echo "✅ Snowflake CLI connection successful"
           
-          try:
-              conn = snowflake.connector.connect(
-                  account=os.environ['SNOWFLAKE_ACCOUNT'],
-                  user=os.environ['SNOWFLAKE_USER'],
-                  password=os.environ['SNOWFLAKE_PASSWORD'],
-                  warehouse='${{ needs.setup.outputs.snowflake_warehouse }}',
-                  database='${{ needs.setup.outputs.snowflake_database }}'
-              )
-              
-              cursor = conn.cursor()
-              cursor.execute("SELECT CURRENT_USER(), CURRENT_ACCOUNT(), CURRENT_REGION()")
-              result = cursor.fetchone()
-              print(f"✅ Connected as: {result[0]} to {result[1]} in {result[2]}")
-              
-              cursor.close()
-              conn.close()
-              print("✅ Snowflake connection successful")
-              
-          except Exception as e:
-              print(f"❌ Snowflake connection failed: {e}")
-              exit(1)
-          EOF
+      - name: 🔍 Detect Changed Files
+        id: changes
+        run: |
+          echo "🔍 Detecting changed SQL files..."
           
-      - name: 🗄️ Deploy SQL Schemas
+          # Determine base reference for git diff
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_REF="origin/${{ github.base_ref }}"
+          else
+            BASE_REF="HEAD~1"
+          fi
+          
+          echo "base_ref=$BASE_REF" >> $GITHUB_OUTPUT
+          
+          # Get changed SQL files
+          CHANGED_FILES=$(git diff --name-only $BASE_REF HEAD -- Account/snowflake/ Customer/snowflake/ shared/snowflake/ | grep '\.sql$' || true)
+          echo "changed_files<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGED_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "📝 Changed SQL files:"
+          echo "$CHANGED_FILES" | while read -r file; do
+            [ -n "$file" ] && echo "  - $file"
+          done
+          
+      - name: 🗄️ Deploy SQL Schemas with Snowflake CLI
         if: needs.setup.outputs.dry_run == 'false'
-        env:
-          SNOWFLAKE_ACCOUNT: ${{ secrets[format('SNOWFLAKE_{0}_ACCOUNT', needs.setup.outputs.target_environment)] }}
-          SNOWFLAKE_USER: ${{ secrets[format('SNOWFLAKE_{0}_USER', needs.setup.outputs.target_environment)] }}
-          SNOWFLAKE_PASSWORD: ${{ secrets[format('SNOWFLAKE_{0}_PASSWORD', needs.setup.outputs.target_environment)] }}
         run: |
-          echo "🚀 Deploying to ${{ needs.setup.outputs.target_environment }}..."
+          echo "🚀 Deploying to ${{ needs.setup.outputs.target_environment }} using Snowflake CLI..."
           mkdir -p deployment-logs
           
-          python3 << 'EOF'
-          import snowflake.connector
-          import os
-          from datetime import datetime
+          # Set database and warehouse context
+          snow sql -q "USE DATABASE ${{ needs.setup.outputs.snowflake_database }}" --connection default
+          snow sql -q "USE WAREHOUSE ${{ needs.setup.outputs.snowflake_warehouse }}" --connection default
           
-          # Connection parameters
-          conn_params = {
-              'account': os.environ['SNOWFLAKE_ACCOUNT'],
-              'user': os.environ['SNOWFLAKE_USER'],
-              'password': os.environ['SNOWFLAKE_PASSWORD']
-          }
+          # Deploy foundation files first
+          echo "🏗️ Deploying foundation schema..."
+          if [ -f "Account/snowflake/schemas/00_database_and_warehouse.sql" ]; then
+            echo "  Executing: Account/snowflake/schemas/00_database_and_warehouse.sql"
+            snow sql -f Account/snowflake/schemas/00_database_and_warehouse.sql --connection default
+          fi
           
-          database = '${{ needs.setup.outputs.snowflake_database }}'
-          warehouse = '${{ needs.setup.outputs.snowflake_warehouse }}'
-          deployment_mode = '${{ needs.setup.outputs.deployment_mode }}'
+          # Deployment logic based on changed files and deployment mode
+          DEPLOYMENT_MODE="${{ needs.setup.outputs.deployment_mode }}"
+          TARGET_SCHEMAS="${{ needs.setup.outputs.target_schemas }}"
+          CHANGED_FILES="${{ steps.changes.outputs.changed_files }}"
           
-          try:
-              print("🔗 Connecting to Snowflake...")
-              conn = snowflake.connector.connect(**conn_params)
-              cursor = conn.cursor()
+          echo "📋 Deployment Mode: $DEPLOYMENT_MODE"
+          echo "📋 Target Schemas: $TARGET_SCHEMAS"
+          echo "📋 Changed Files: $CHANGED_FILES"
+          
+          # Create deployment tracking table
+          echo "📊 Creating deployment tracking..."
+          snow sql -q "CREATE OR REPLACE TABLE monitoring.github_deployments (
+            run_id VARCHAR(50),
+            deployment_time TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+            environment VARCHAR(50),
+            git_sha VARCHAR(50),
+            deployment_mode VARCHAR(50),
+            actor VARCHAR(100),
+            files_deployed NUMBER,
+            status VARCHAR(20)
+          )" --connection default
+          
+          # Define schema deployment order
+          SCHEMAS_ORDER=("monitoring" "raw_data" "processed_data" "reporting")
+          
+          # Deploy schemas based on mode
+          FILES_DEPLOYED=0
+          
+          if [ "$DEPLOYMENT_MODE" = "FULL" ] || [ -z "$TARGET_SCHEMAS" ]; then
+            echo "💯 Full deployment - deploying all schemas"
+            
+            # Deploy monitoring schema
+            for file in Customer/snowflake/monitoring/*.sql; do
+              if [ -f "$file" ]; then
+                echo "  📊 Executing: $file"
+                snow sql -f "$file" --connection default
+                FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
+              fi
+            done
+            
+            # Deploy raw_data schema
+            for file in Account/snowflake/schemas/raw_data/*.sql; do
+              if [ -f "$file" ]; then
+                echo "  📊 Executing: $file"
+                snow sql -f "$file" --connection default
+                FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
+              fi
+            done
+            
+            # Deploy processed_data schema
+            for file in Account/snowflake/schemas/processed_data/*.sql; do
+              if [ -f "$file" ]; then
+                echo "  📊 Executing: $file"
+                snow sql -f "$file" --connection default
+                FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
+              fi
+            done
+            
+            # Deploy reporting schema
+            for file in shared/snowflake/reporting/*.sql; do
+              if [ -f "$file" ]; then
+                echo "  📊 Executing: $file"
+                snow sql -f "$file" --connection default
+                FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
+              fi
+            done
+            
+          elif [ "$DEPLOYMENT_MODE" = "INCREMENTAL" ]; then
+            echo "🔄 Incremental deployment - processing changed files"
+            
+            # Process each changed file
+            echo "$CHANGED_FILES" | while IFS= read -r file; do
+              if [ -n "$file" ] && [ -f "$file" ]; then
+                echo "  📊 Executing changed file: $file"
+                snow sql -f "$file" --connection default
+                FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
+              fi
+            done
+            
+          else
+            echo "🎯 Schema-specific deployment"
+            
+            # Deploy specific schemas
+            IFS=',' read -ra SCHEMA_ARRAY <<< "$TARGET_SCHEMAS"
+            for schema in "${SCHEMA_ARRAY[@]}"; do
+              schema=$(echo "$schema" | xargs)  # trim whitespace
+              echo "  📊 Deploying schema: $schema"
               
-              # Create database and warehouse
-              print("🏗️ Creating infrastructure...")
-              cursor.execute(f"CREATE DATABASE IF NOT EXISTS {database}")
-              cursor.execute(f"CREATE WAREHOUSE IF NOT EXISTS {warehouse} WITH WAREHOUSE_SIZE='SMALL'")
-              
-              # Set context
-              cursor.execute(f"USE DATABASE {database}")
-              cursor.execute(f"USE WAREHOUSE {warehouse}")
-              
-              # Initialize variables for incremental deployment  
-              changed_files = []
-              
-              # Load deployment configuration
-              import yaml
-              
-              try:
-                  with open('.github/deployment-config.yml', 'r') as f:
-                      deployment_config = yaml.safe_load(f)
-                  print(f"📋 Loaded deployment configuration with {len(deployment_config['deployment']['schemas'])} schemas")
-              except Exception as e:
-                  print(f"⚠️ Could not load deployment config: {e}")
-                  print(f"📋 Using fallback configuration")
-                  deployment_config = {
-                      'deployment': {
-                          'schemas': [
-                              {'name': 'monitoring', 'dependencies': []},
-                              {'name': 'raw_data', 'dependencies': ['monitoring']},
-                              {'name': 'processed_data', 'dependencies': ['monitoring', 'raw_data']},
-                              {'name': 'reporting', 'dependencies': ['monitoring', 'raw_data', 'processed_data']}
-                          ]
-                      }
-                  }
-              
-              # Extract schema names in dependency order
-              all_schema_names = [schema['name'] for schema in deployment_config['deployment']['schemas']]
-              print(f"📋 Available schemas: {all_schema_names}")
-              
-              # Determine schemas to deploy
-              target_schemas_input = '${{ needs.setup.outputs.target_schemas }}'.strip()
-              
-              if target_schemas_input:
-                  # Use specified schemas (works with any deployment mode)
-                  requested_schemas = [s.strip().lower() for s in target_schemas_input.split(',')]
-                  print(f"🎯 Target schemas specified: {requested_schemas}")
-                  
-                  # Add dependencies automatically
-                  schemas = []
-                  schema_deps = {schema['name']: schema.get('dependencies', []) for schema in deployment_config['deployment']['schemas']}
-                  
-                  # Add required dependencies for requested schemas
-                  for requested in requested_schemas:
-                      if requested in schema_deps:
-                          for dep in schema_deps[requested]:
-                              if dep not in schemas and dep not in requested_schemas:
-                                  schemas.append(dep)
-                                  print(f"📎 Adding {dep} schema (required dependency for {requested})")
-                  
-                  # Add requested schemas in dependency order
-                  for schema_name in all_schema_names:
-                      if schema_name in requested_schemas and schema_name not in schemas:
-                          schemas.append(schema_name)
-                  
-                  print(f"📋 Final schema list with dependencies: {schemas}")
-              elif deployment_mode == "FULL":
-                  schemas = all_schema_names
-                  print(f"📋 Full deployment - all schemas: {schemas}")
-              else:
-                  # INCREMENTAL: detect changed files from git diff
-                  import subprocess
-                  import os
-                  
-                  try:
-                      # Get list of changed SQL files since last deployment
-                      # Use HEAD~1 to compare with previous commit, or origin/main for PR
-                      if os.environ.get('GITHUB_EVENT_NAME') == 'pull_request':
-                          base_ref = 'origin/main'
-                      else:
-                          base_ref = 'HEAD~1'
-                      
-                      print(f"🔍 Git diff command: git diff --name-only {base_ref} HEAD -- Account/snowflake/ Customer/snowflake/ shared/snowflake/")
-                      
-                      # First, let's check git status and recent commits
-                      status_result = subprocess.run(['git', 'log', '--oneline', '-5'], 
-                                                   capture_output=True, text=True, check=False)
-                      print(f"📋 Recent commits:\\n{status_result.stdout}")
-                      
-                      result = subprocess.run(['git', 'diff', '--name-only', base_ref, 'HEAD', '--', 'Account/snowflake/', 'Customer/snowflake/', 'shared/snowflake/'], 
-                                            capture_output=True, text=True, check=True)
-                      changed_files = result.stdout.strip().split('\n') if result.stdout.strip() else []
-                      
-                      print(f"🔍 Changed SQL files: {changed_files}")
-                      
-                      # Determine which schemas need deployment based on changed files
-                      schemas_to_deploy = set()
-                      
-                      for file_path in changed_files:
-                          if file_path:
-                              print(f"  📁 Analyzing: {file_path}")
-                              
-                              # Foundation files affect all schemas
-                              if 'Account/snowflake/schemas/00_database_and_warehouse.sql' in file_path:
-                                  schemas_to_deploy.update(all_schema_names)
-                                  print(f"    🏗️ Foundation change - deploying all schemas")
-                              
-                              # Schema-specific changes - dynamically detect from config
-                              else:
-                                  schema_detected = False
-                                  for schema_config in deployment_config['deployment']['schemas']:
-                                      schema_name = schema_config['name']
-                                      # Check all possible locations for schema files
-                                      schema_paths = [
-                                          f'Account/snowflake/schemas/{schema_name}/',
-                                          f'Customer/snowflake/{schema_name}/',
-                                          f'shared/snowflake/{schema_name}/'
-                                      ]
-                                      if any(path in file_path for path in schema_paths):
-                                          schemas_to_deploy.add(schema_name)
-                                          
-                                          # Add dependent schemas if configured
-                                          dependent_schemas = [s['name'] for s in deployment_config['deployment']['schemas'] 
-                                                             if schema_name in s.get('dependencies', [])]
-                                          if dependent_schemas:
-                                              schemas_to_deploy.update(dependent_schemas)
-                                              print(f"    📥 {schema_name} schema change detected (also deploying: {', '.join(dependent_schemas)})")
-                                          else:
-                                              print(f"    📊 {schema_name} schema change detected")
-                                          schema_detected = True
-                                          break
-                                  
-                                  if not schema_detected:
-                                      # Handle special cases
-                                      if 'Account/snowflake/schemas/permissions.sql' in file_path:
-                                          # Permissions affect all schemas
-                                          schemas_to_deploy.update(all_schema_names)
-                                          print(f"    🔐 Permissions change - deploying all schemas")
-                                      elif any(file_path.startswith(prefix) for prefix in ['Account/snowflake/', 'Customer/snowflake/', 'shared/snowflake/']) and file_path.endswith('.sql'):
-                                          # Other SQL files at root level of these directories
-                                          schemas_to_deploy.update(all_schema_names)
-                                          print(f"    🗄️ Root SQL change - deploying all schemas")
-                      
-                      # Convert to ordered list maintaining dependency order
-                      schemas = [s for s in all_schema_names if s in schemas_to_deploy]
-                      
-                      if not schemas:
-                          print(f"🔍 No SQL schema changes detected - skipping deployment")
-                          schemas = []
-                      else:
-                          print(f"📋 Incremental deployment - changed schemas: {schemas}")
-                          
-                  except subprocess.CalledProcessError as e:
-                      print(f"⚠️ Git diff failed: {e}")
-                      print(f"⚠️ Git diff stderr: {e.stderr}")
-                      print(f"⚠️ Git diff stdout: {e.stdout}")
-                      print(f"📋 Fallback: deploying all schemas")
-                      schemas = all_schema_names
-                  except Exception as e:
-                      print(f"⚠️ Error detecting changes: {e}")
-                      print(f"📋 Fallback: deploying all schemas")
-                      schemas = all_schema_names
-              
-              print(f"📋 Deploying schemas: {', '.join(schemas)}")
-              
-              # Check if there are any schemas to deploy
-              if not schemas:
-                  print("🎯 No schemas to deploy - exiting early")
-                  exit(0)
-              
-              # Deploy schemas following the deployment order
-              deployment_files = []
-              
-              # Include foundation setup only if deploying schemas
-              deployment_files.append("Account/snowflake/schemas/00_database_and_warehouse.sql")
-              
-              # Dynamically discover schema files from repository structure using config
-              import glob
-              schema_files = {}
-              
-              # Get file patterns from config
-              include_patterns = deployment_config.get('file_patterns', {}).get('include', ['*.sql'])
-              exclude_patterns = deployment_config.get('file_patterns', {}).get('exclude', [])
-              
-              for schema_config in deployment_config['deployment']['schemas']:
-                  schema_name = schema_config['name']
-                  # Check multiple possible locations for schema files
-                  schema_paths = [
-                      f"Account/snowflake/schemas/{schema_name}/",
-                      f"Customer/snowflake/{schema_name}/",
-                      f"shared/snowflake/{schema_name}/"
-                  ]
-                  
-                  for schema_path in schema_paths:
-                      if os.path.exists(schema_path):
-                          # Find SQL files matching include patterns
-                          sql_files = []
-                          for pattern in include_patterns:
-                              sql_files.extend(glob.glob(f"{schema_path}{pattern}"))
-                          
-                          # Filter out excluded files
-                          for exclude_pattern in exclude_patterns:
-                              excluded_files = glob.glob(f"{schema_path}{exclude_pattern}")
-                              sql_files = [f for f in sql_files if f not in excluded_files]
-                          
-                          if sql_files:
-                              # Convert to relative paths maintaining directory structure
-                              relative_files = [f for f in sql_files]
-                              # Sort files for consistent deployment order
-                              relative_files.sort()
-                              if schema_name not in schema_files:
-                                  schema_files[schema_name] = []
-                              schema_files[schema_name].extend(relative_files)
-                              print(f"📁 Discovered {len(relative_files)} files for {schema_name} schema in {schema_path}: {relative_files}")
-                          else:
-                              print(f"⚠️ No SQL files found in {schema_path} matching patterns {include_patterns}")
-                      else:
-                          print(f"⚠️ Schema directory not found: {schema_path}")
-              
-              print(f"📋 Total discovered schema files: {sum(len(files) for files in schema_files.values())}")
-              
-              # Add files for target schemas in dependency order - but only changed files in incremental mode
-              if deployment_mode == "INCREMENTAL":
-                  # For incremental, only add files that have actually changed
-                  for schema in schemas:
-                      if schema in schema_files:
-                          schema_changed_files = []
-                          for file_path in schema_files[schema]:
-                              if file_path in changed_files:
-                                  schema_changed_files.append(file_path)
-                                  print(f"📁 Will deploy changed file: {file_path}")
-                          
-                          if schema_changed_files:
-                              deployment_files.extend(schema_changed_files)
-                              print(f"📁 Added {len(schema_changed_files)} changed files for {schema} schema")
-                          else:
-                              print(f"📁 No changed files detected for {schema} schema")
-              else:
-                  # For FULL and SCHEMA_SPECIFIC modes, deploy all files for target schemas
-                  for schema in schemas:
-                      if schema in schema_files:
-                          deployment_files.extend(schema_files[schema])
-                          print(f"📁 Added {len(schema_files[schema])} files for {schema} schema")
-              
-              # Always include permissions at the end if any schema is deployed
-              if schemas:
-                  deployment_files.append("Account/snowflake/schemas/permissions.sql")
-              
-              print(f"📋 Deploying {len(deployment_files)} SQL files in order...")
-              
-              for sql_file in deployment_files:
-                  # Handle different path formats - some already have full path, others need sql/ prefix
-                  if sql_file.startswith(('Account/', 'Customer/', 'shared/')):
-                      file_path = sql_file
-                  else:
-                      file_path = f"sql/{sql_file}"
-                  print(f"🗄️ Executing: {file_path}")
-                  
-                  try:
-                      # Execute SQL file using execute_stream for full file execution
-                      print(f"  📝 Executing SQL file using execute_stream")
-                      
-                      try:
-                          # Open file and use execute_stream to execute entire file
-                          with open(file_path, 'r') as f:
-                              # Replace hardcoded database name with environment-specific database
-                              sql_content = f.read()
-                              sql_content = sql_content.replace('USE DATABASE analytics_platform;', f'USE DATABASE {database};')
-                              sql_content = sql_content.replace('CREATE OR ALTER DATABASE analytics_platform;', f'CREATE OR ALTER DATABASE {database};')
-                              print(f"  🔄 Database name replaced: analytics_platform -> {database}")
-                              
-                              # Create a temporary file-like object from the modified content
-                              from io import StringIO
-                              sql_stream = StringIO(sql_content)
-                              
-                              # Execute the entire file content as a stream
-                              results = conn.execute_stream(sql_stream)
-                              
-                              # Process results
-                              statement_count = 0
-                              for result in results:
-                                  statement_count += 1
-                                  try:
-                                      # Get result details if available
-                                      if hasattr(result, 'fetchall'):
-                                          rows = result.fetchall()
-                                          print(f"  ✅ Statement {statement_count} executed successfully ({len(rows)} rows affected)")
-                                      else:
-                                          print(f"  ✅ Statement {statement_count} executed successfully")
-                                  except Exception as stmt_error:
-                                      error_msg = str(stmt_error).lower()
-                                      # Treat certain errors as warnings, others as failures
-                                      if any(warning in error_msg for warning in ['already exists', 'does not exist', 'if exists']):
-                                          print(f"  ⚠️ Statement {statement_count} warning: {stmt_error}")
-                                      else:
-                                          print(f"  ❌ Statement {statement_count} failed: {stmt_error}")
-                                          if deployment_mode == "SCHEMA_SPECIFIC":
-                                              raise stmt_error
-                                          # Continue with other statements for other modes
-                              
-                              print(f"  ✅ SQL file executed successfully ({statement_count} statements)")
-                              
-                      except Exception as file_error:
-                          print(f"  ❌ File execution failed: {file_error}")
-                          if deployment_mode == "SCHEMA_SPECIFIC":
-                              raise file_error
-                      
-                      print(f"✅ File {sql_file} completed")
-                      
-                  except FileNotFoundError:
-                      print(f"⚠️ File not found: {file_path} - skipping")
-                  except Exception as file_error:
-                      print(f"❌ Error processing {file_path}: {file_error}")
-                      # Exit on individual file errors for FULL and SCHEMA_SPECIFIC modes
-                      if deployment_mode in ["FULL", "SCHEMA_SPECIFIC"]:
-                          raise file_error
-              
-              # Create deployment tracking in monitoring schema
-              try:
-                  cursor.execute("""
-                      CREATE OR REPLACE TABLE monitoring.github_deployments (
-                          run_id VARCHAR(50),
-                          deployment_time TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-                          environment VARCHAR(50),
-                          git_sha VARCHAR(50),
-                          deployment_mode VARCHAR(50),
-                          actor VARCHAR(100),
-                          files_deployed NUMBER,
-                          status VARCHAR(20)
-                      )
-                  """)
-                  
-                  cursor.execute(f"""
-                      INSERT INTO monitoring.github_deployments VALUES (
-                          '${{ github.run_id }}',
-                          CURRENT_TIMESTAMP(),
-                          '${{ needs.setup.outputs.target_environment }}',
-                          '${{ github.sha }}',
-                          '{deployment_mode}',
-                          '${{ github.actor }}',
-                          {len(deployment_files)},
-                          'SUCCESS'
-                      )
-                  """)
-                  
-                  print("✅ Deployment tracking record created")
-              except Exception as track_error:
-                  print(f"⚠️ Could not create deployment tracking: {track_error}")
-              
-              cursor.close()
-              conn.close()
-              print("🎉 Deployment completed successfully!")
-              
-              # Write success log
-              with open('deployment-logs/deployment.log', 'w') as f:
-                  f.write(f"Deployment to ${{ needs.setup.outputs.target_environment }} completed successfully at {datetime.now()}\n")
-                  f.write(f"Database: {database}\n")
-                  f.write(f"Warehouse: {warehouse}\n")
-                  f.write(f"Files deployed: {len(deployment_files)}\n")
-                  f.write(f"Deployment mode: {deployment_mode}\n")
-                  for sql_file in deployment_files:
-                      f.write(f"  - {sql_file}\n")
-              
-          except Exception as e:
-              print(f"❌ Deployment failed: {e}")
-              with open('deployment-logs/deployment.log', 'w') as f:
-                  f.write(f"Deployment to ${{ needs.setup.outputs.target_environment }} failed at {datetime.now()}\n")
-                  f.write(f"Error: {str(e)}\n")
-              exit(1)
-          EOF
+              case "$schema" in
+                "monitoring")
+                  for file in Customer/snowflake/monitoring/*.sql; do
+                    if [ -f "$file" ]; then
+                      echo "    📊 Executing: $file"
+                      snow sql -f "$file" --connection default
+                      FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
+                    fi
+                  done
+                  ;;
+                "raw_data")
+                  for file in Account/snowflake/schemas/raw_data/*.sql; do
+                    if [ -f "$file" ]; then
+                      echo "    📊 Executing: $file"
+                      snow sql -f "$file" --connection default
+                      FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
+                    fi
+                  done
+                  ;;
+                "processed_data")
+                  for file in Account/snowflake/schemas/processed_data/*.sql; do
+                    if [ -f "$file" ]; then
+                      echo "    📊 Executing: $file"
+                      snow sql -f "$file" --connection default
+                      FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
+                    fi
+                  done
+                  ;;
+                "reporting")
+                  for file in shared/snowflake/reporting/*.sql; do
+                    if [ -f "$file" ]; then
+                      echo "    📊 Executing: $file"
+                      snow sql -f "$file" --connection default
+                      FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
+                    fi
+                  done
+                  ;;
+              esac
+            done
+          fi
+          
+          # Deploy permissions (always last)
+          if [ -f "Account/snowflake/schemas/permissions.sql" ]; then
+            echo "🔐 Deploying permissions..."
+            snow sql -f Account/snowflake/schemas/permissions.sql --connection default
+            FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
+          fi
+          
+          # Record deployment
+          snow sql -q "INSERT INTO monitoring.github_deployments VALUES (
+            '${{ github.run_id }}',
+            CURRENT_TIMESTAMP(),
+            '${{ needs.setup.outputs.target_environment }}',
+            '${{ github.sha }}',
+            '$DEPLOYMENT_MODE',
+            '${{ github.actor }}',
+            $FILES_DEPLOYED,
+            'SUCCESS'
+          )" --connection default
+          
+          echo "🎉 Deployment completed successfully! Files deployed: $FILES_DEPLOYED"
+          echo "Files deployed: $FILES_DEPLOYED" > deployment-logs/deployment.log
           
       - name: 🔍 Dry Run Report
         if: needs.setup.outputs.dry_run == 'true'
@@ -687,96 +467,40 @@ jobs:
           
       - name: 🔍 Post-Deployment Verification
         if: needs.setup.outputs.dry_run == 'false'
-        env:
-          SNOWFLAKE_ACCOUNT: ${{ secrets[format('SNOWFLAKE_{0}_ACCOUNT', needs.setup.outputs.target_environment)] }}
-          SNOWFLAKE_USER: ${{ secrets[format('SNOWFLAKE_{0}_USER', needs.setup.outputs.target_environment)] }}
-          SNOWFLAKE_PASSWORD: ${{ secrets[format('SNOWFLAKE_{0}_PASSWORD', needs.setup.outputs.target_environment)] }}
         run: |
           echo "🔍 Verifying deployment..."
           
-          python3 << 'EOF'
-          import snowflake.connector
-          import os
+          # Verify connection and context
+          echo "📋 Checking database and warehouse..."
+          snow sql -q "SELECT CURRENT_DATABASE(), CURRENT_WAREHOUSE()" --connection default
           
-          try:
-              conn = snowflake.connector.connect(
-                  account=os.environ['SNOWFLAKE_ACCOUNT'],
-                  user=os.environ['SNOWFLAKE_USER'],
-                  password=os.environ['SNOWFLAKE_PASSWORD'],
-                  warehouse='${{ needs.setup.outputs.snowflake_warehouse }}',
-                  database='${{ needs.setup.outputs.snowflake_database }}'
-              )
-              cursor = conn.cursor()
-              
-              # Verify database
-              print("📋 Checking database...")
-              cursor.execute("SELECT CURRENT_DATABASE()")
-              db_result = cursor.fetchone()
-              print(f"✅ Connected to database: {db_result[0]}")
-              
-              # Verify warehouse  
-              print("🏭 Checking warehouse...")
-              cursor.execute("SELECT CURRENT_WAREHOUSE()")
-              wh_result = cursor.fetchone()
-              print(f"✅ Using warehouse: {wh_result[0]}")
-              
-              # Verify schemas
-              print("🗄️ Checking schemas...")
-              cursor.execute("SHOW SCHEMAS")
-              schemas = cursor.fetchall()
-              schema_names = [schema[1] for schema in schemas]  # Schema name is in second column
-              print(f"✅ Found schemas: {', '.join(schema_names)}")
-              
-              # Check deployed objects
-              print("📊 Verifying deployed objects...")
-              
-              # Check tables in each schema
-              verification_checks = [
-                  ("monitoring", "TABLES", "job_executions"),
-                  ("raw_data", "TABLES", "orders"),
-                  ("processed_data", "TABLES", "customer_metrics"),
-                  ("reporting", "VIEWS", "sales_summary")
-              ]
-              
-              for schema, object_type, sample_object in verification_checks:
-                  if schema.upper() in [s.upper() for s in schema_names]:
-                      try:
-                          cursor.execute(f"SHOW {object_type} IN SCHEMA {schema}")
-                          objects = cursor.fetchall()
-                          object_count = len(objects)
-                          print(f"✅ Found {object_count} {object_type.lower()} in {schema} schema")
-                          
-                          # Check for specific sample object
-                          object_names = [obj[1] for obj in objects]  # Object name is in second column
-                          if sample_object.upper() in [obj.upper() for obj in object_names]:
-                              print(f"  ✅ Verified {sample_object} exists")
-                          else:
-                              print(f"  ⚠️ Sample object {sample_object} not found")
-                              
-                      except Exception as e:
-                          print(f"⚠️ Could not verify {object_type.lower()} in {schema}: {e}")
-                  else:
-                      print(f"⚠️ Schema {schema} not found")
-              
-              # Check deployment tracking
-              try:
-                  cursor.execute("SELECT COUNT(*) FROM monitoring.github_deployments WHERE run_id = '${{ github.run_id }}'")
-                  count = cursor.fetchone()[0]
-                  if count > 0:
-                      print(f"✅ Found deployment tracking record")
-                  else:
-                      print(f"⚠️ No deployment tracking record found")
-              except Exception as e:
-                  print(f"⚠️ Could not check deployment tracking: {e}")
-              
-              cursor.close()
-              conn.close()
-              print("✅ Verification completed")
-              
-          except Exception as e:
-              print(f"❌ Verification failed: {e}")
-              exit(1)
-          EOF
+          # Check schemas
+          echo "🗄️ Verifying schemas exist..."
+          snow sql -q "SHOW SCHEMAS" --connection default
+          # Check objects in each schema
+          echo "📊 Verifying deployed objects..."
+          
+          # Check monitoring schema objects
+          echo "  🔍 Checking monitoring schema..."
+          snow sql -q "SHOW TABLES IN SCHEMA monitoring" --connection default || echo "  ⚠️ monitoring schema not found or empty"
+          
+          # Check raw_data schema objects  
+          echo "  🔍 Checking raw_data schema..."
+          snow sql -q "SHOW TABLES IN SCHEMA raw_data" --connection default || echo "  ⚠️ raw_data schema not found or empty"
+          
+          # Check processed_data schema objects
+          echo "  🔍 Checking processed_data schema..."
+          snow sql -q "SHOW TABLES IN SCHEMA processed_data" --connection default || echo "  ⚠️ processed_data schema not found or empty"
+          
+          # Check reporting schema objects
+          echo "  🔍 Checking reporting schema..."
+          snow sql -q "SHOW VIEWS IN SCHEMA reporting" --connection default || echo "  ⚠️ reporting schema not found or empty"
+          
+          # Check deployment tracking
+          echo "📊 Checking deployment tracking..."
+          snow sql -q "SELECT COUNT(*) FROM monitoring.github_deployments WHERE run_id = '${{ github.run_id }}'" --connection default || echo "⚠️ Could not check deployment tracking"
+          
+          echo "✅ Verification completed!"
           
       - name: 📊 Upload Deployment Logs
         if: always()
@@ -819,67 +543,37 @@ jobs:
       - name: 📥 Checkout Code
         uses: actions/checkout@v4
         
-      - name: 🔧 Install Dependencies
+      - name: 🔧 Install Snowflake CLI
+        uses: snowflakedb/snowflake-cli-action@v1.5
+        with:
+          cli-version: "latest"
+          default-config-file-path: "snowflake-config.toml"
+          
+      - name: 📝 Create Snowflake Configuration
         run: |
-          echo "📦 Installing Python dependencies..."
-          pip install snowflake-connector-python
-          
-      - name: 📊 Load Sample Data
-        env:
-          SNOWFLAKE_ACCOUNT: ${{ secrets[format('SNOWFLAKE_{0}_ACCOUNT', needs.setup.outputs.target_environment)] }}
-          SNOWFLAKE_USER: ${{ secrets[format('SNOWFLAKE_{0}_USER', needs.setup.outputs.target_environment)] }}
-          SNOWFLAKE_PASSWORD: ${{ secrets[format('SNOWFLAKE_{0}_PASSWORD', needs.setup.outputs.target_environment)] }}
-        run: |
-          echo "📊 Loading sample data to ${{ needs.setup.outputs.target_environment }}..."
-          
-          python3 << 'EOF'
-          import snowflake.connector
-          import os
-          
-          # Connection parameters
-          conn_params = {
-              'account': os.environ['SNOWFLAKE_ACCOUNT'],
-              'user': os.environ['SNOWFLAKE_USER'],
-              'password': os.environ['SNOWFLAKE_PASSWORD'],
-              'warehouse': '${{ needs.setup.outputs.snowflake_warehouse }}',
-              'database': '${{ needs.setup.outputs.snowflake_database }}'
-          }
-          
-          try:
-              print("🔗 Connecting to Snowflake...")
-              conn = snowflake.connector.connect(**conn_params)
-              cursor = conn.cursor()
-              
-              # Read and execute sample data file
-              print("📊 Loading sample data from Account/snowflake/02_sample_data.sql...")
-              with open('Account/snowflake/02_sample_data.sql', 'r') as f:
-                  sql_content = f.read()
-              
-              # Replace hardcoded database name with environment-specific database
-              database = '${{ needs.setup.outputs.snowflake_database }}'
-              sql_content = sql_content.replace('USE DATABASE analytics_platform;', f'USE DATABASE {database};')
-              
-              # Execute sample data by splitting on semicolons (no procedures in sample data)
-              statements = [stmt.strip() for stmt in sql_content.split(';') if stmt.strip()]
-              print(f"📊 Executing {len(statements)} sample data statements...")
-              
-              for i, statement in enumerate(statements, 1):
-                  if statement:
-                      try:
-                          cursor.execute(statement)
-                          print(f"  ✅ Statement {i} executed successfully")
-                      except Exception as stmt_error:
-                          print(f"  ⚠️ Statement {i} warning: {stmt_error}")
-                          # Continue with sample data loading even on errors
-              
-              cursor.close()
-              conn.close()
-              print("🎉 Sample data loaded successfully!")
-              
-          except Exception as e:
-              print(f"❌ Sample data loading failed: {e}")
-              exit(1)
+          echo "📝 Creating Snowflake CLI configuration..."
+          mkdir -p ~/.snowflake
+          cat > ~/.snowflake/config.toml << EOF
+          [connections.default]
+          account = "${{ secrets[format('SNOWFLAKE_{0}_ACCOUNT', needs.setup.outputs.target_environment)] }}"
+          user = "${{ secrets[format('SNOWFLAKE_{0}_USER', needs.setup.outputs.target_environment)] }}"
+          password = "${{ secrets[format('SNOWFLAKE_{0}_PASSWORD', needs.setup.outputs.target_environment)] }}"
+          warehouse = "${{ needs.setup.outputs.snowflake_warehouse }}"
+          database = "${{ needs.setup.outputs.snowflake_database }}"
           EOF
+          
+      - name: 📊 Load Sample Data with Snowflake CLI
+        run: |
+          echo "📊 Loading sample data to ${{ needs.setup.outputs.target_environment }} using Snowflake CLI..."
+          
+          # Load sample data using Snowflake CLI
+          if [ -f "Account/snowflake/02_sample_data.sql" ]; then
+            echo "📊 Executing sample data file: Account/snowflake/02_sample_data.sql"
+            snow sql -f Account/snowflake/02_sample_data.sql --connection default
+            echo "🎉 Sample data loaded successfully!"
+          else
+            echo "⚠️ Sample data file not found: Account/snowflake/02_sample_data.sql"
+          fi
 
   # Job 6: Notification
   notify:
