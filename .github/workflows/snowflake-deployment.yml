@@ -47,12 +47,12 @@ on:
   # Automatic triggers: feature branches → DEV, main → STAGING
   push:
     branches: [ main, 'feature/**', 'feat/**', 'dev/**' ]
-    paths: [ 'sql/**' ]
+    paths: [ 'Account/snowflake/**', 'Customer/snowflake/**', 'shared/snowflake/**' ]
     
   # Pull requests always deploy to DEV (dry run)
   pull_request:
     branches: [ main ]
-    paths: [ 'sql/**' ]
+    paths: [ 'Account/snowflake/**', 'Customer/snowflake/**', 'shared/snowflake/**' ]
 
 env:
   # Build information
@@ -166,16 +166,16 @@ jobs:
           echo "Environment: ${{ needs.setup.outputs.target_environment }}" >> reports/sql-validation.md
           echo "" >> reports/sql-validation.md
           
-          # Check for dangerous patterns
+          # Check for dangerous patterns in new structure
           DANGEROUS_PATTERNS=0
-          if find sql/ -name "*.sql" -exec grep -l "DROP TABLE\|DROP DATABASE\|TRUNCATE" {} \; | wc -l | grep -v '^0$'; then
+          if find Account/snowflake/ Customer/snowflake/ shared/snowflake/ -name "*.sql" -exec grep -l "DROP TABLE\|DROP DATABASE\|TRUNCATE" {} \; 2>/dev/null | wc -l | grep -v '^0$'; then
             echo "⚠️ Found dangerous DROP/TRUNCATE statements" >> reports/sql-validation.md
             DANGEROUS_PATTERNS=1
           fi
           
           # Check for idempotent patterns
           NON_IDEMPOTENT=0
-          if find sql/ -name "*.sql" -exec grep -L "CREATE OR REPLACE\|CREATE.*IF NOT EXISTS" {} \; | wc -l | grep -v '^0$'; then
+          if find Account/snowflake/ Customer/snowflake/ shared/snowflake/ -name "*.sql" -exec grep -L "CREATE OR REPLACE\|CREATE.*IF NOT EXISTS" {} \; 2>/dev/null | wc -l | grep -v '^0$'; then
             echo "⚠️ Found non-idempotent CREATE statements" >> reports/sql-validation.md
             NON_IDEMPOTENT=1
           fi
@@ -374,14 +374,14 @@ jobs:
                       else:
                           base_ref = 'HEAD~1'
                       
-                      print(f"🔍 Git diff command: git diff --name-only {base_ref} HEAD -- sql/")
+                      print(f"🔍 Git diff command: git diff --name-only {base_ref} HEAD -- Account/snowflake/ Customer/snowflake/ shared/snowflake/")
                       
                       # First, let's check git status and recent commits
                       status_result = subprocess.run(['git', 'log', '--oneline', '-5'], 
                                                    capture_output=True, text=True, check=False)
                       print(f"📋 Recent commits:\\n{status_result.stdout}")
                       
-                      result = subprocess.run(['git', 'diff', '--name-only', base_ref, 'HEAD', '--', 'sql/'], 
+                      result = subprocess.run(['git', 'diff', '--name-only', base_ref, 'HEAD', '--', 'Account/snowflake/', 'Customer/snowflake/', 'shared/snowflake/'], 
                                             capture_output=True, text=True, check=True)
                       changed_files = result.stdout.strip().split('\n') if result.stdout.strip() else []
                       
@@ -395,7 +395,7 @@ jobs:
                               print(f"  📁 Analyzing: {file_path}")
                               
                               # Foundation files affect all schemas
-                              if 'schemas/00_database_and_warehouse.sql' in file_path:
+                              if 'Account/snowflake/schemas/00_database_and_warehouse.sql' in file_path:
                                   schemas_to_deploy.update(all_schema_names)
                                   print(f"    🏗️ Foundation change - deploying all schemas")
                               
@@ -404,7 +404,13 @@ jobs:
                                   schema_detected = False
                                   for schema_config in deployment_config['deployment']['schemas']:
                                       schema_name = schema_config['name']
-                                      if f'schemas/{schema_name}/' in file_path:
+                                      # Check all possible locations for schema files
+                                      schema_paths = [
+                                          f'Account/snowflake/schemas/{schema_name}/',
+                                          f'Customer/snowflake/{schema_name}/',
+                                          f'shared/snowflake/{schema_name}/'
+                                      ]
+                                      if any(path in file_path for path in schema_paths):
                                           schemas_to_deploy.add(schema_name)
                                           
                                           # Add dependent schemas if configured
@@ -420,12 +426,12 @@ jobs:
                                   
                                   if not schema_detected:
                                       # Handle special cases
-                                      if 'schemas/permissions.sql' in file_path:
+                                      if 'Account/snowflake/schemas/permissions.sql' in file_path:
                                           # Permissions affect all schemas
                                           schemas_to_deploy.update(all_schema_names)
                                           print(f"    🔐 Permissions change - deploying all schemas")
-                                      elif file_path.startswith('sql/') and file_path.endswith('.sql'):
-                                          # Other SQL files at root level
+                                      elif any(file_path.startswith(prefix) for prefix in ['Account/snowflake/', 'Customer/snowflake/', 'shared/snowflake/']) and file_path.endswith('.sql'):
+                                          # Other SQL files at root level of these directories
                                           schemas_to_deploy.update(all_schema_names)
                                           print(f"    🗄️ Root SQL change - deploying all schemas")
                       
@@ -460,7 +466,7 @@ jobs:
               deployment_files = []
               
               # Include foundation setup only if deploying schemas
-              deployment_files.append("schemas/00_database_and_warehouse.sql")
+              deployment_files.append("Account/snowflake/schemas/00_database_and_warehouse.sql")
               
               # Dynamically discover schema files from repository structure using config
               import glob
@@ -472,30 +478,38 @@ jobs:
               
               for schema_config in deployment_config['deployment']['schemas']:
                   schema_name = schema_config['name']
-                  schema_path = f"sql/schemas/{schema_name}/"
+                  # Check multiple possible locations for schema files
+                  schema_paths = [
+                      f"Account/snowflake/schemas/{schema_name}/",
+                      f"Customer/snowflake/{schema_name}/",
+                      f"shared/snowflake/{schema_name}/"
+                  ]
                   
-                  if os.path.exists(schema_path):
-                      # Find SQL files matching include patterns
-                      sql_files = []
-                      for pattern in include_patterns:
-                          sql_files.extend(glob.glob(f"{schema_path}{pattern}"))
-                      
-                      # Filter out excluded files
-                      for exclude_pattern in exclude_patterns:
-                          excluded_files = glob.glob(f"{schema_path}{exclude_pattern}")
-                          sql_files = [f for f in sql_files if f not in excluded_files]
-                      
-                      if sql_files:
-                          # Convert to relative paths from sql/ directory
-                          relative_files = [f"schemas/{schema_name}/{os.path.basename(f)}" for f in sql_files]
-                          # Sort files for consistent deployment order
-                          relative_files.sort()
-                          schema_files[schema_name] = relative_files
-                          print(f"📁 Discovered {len(relative_files)} files for {schema_name} schema: {relative_files}")
+                  for schema_path in schema_paths:
+                      if os.path.exists(schema_path):
+                          # Find SQL files matching include patterns
+                          sql_files = []
+                          for pattern in include_patterns:
+                              sql_files.extend(glob.glob(f"{schema_path}{pattern}"))
+                          
+                          # Filter out excluded files
+                          for exclude_pattern in exclude_patterns:
+                              excluded_files = glob.glob(f"{schema_path}{exclude_pattern}")
+                              sql_files = [f for f in sql_files if f not in excluded_files]
+                          
+                          if sql_files:
+                              # Convert to relative paths maintaining directory structure
+                              relative_files = [f for f in sql_files]
+                              # Sort files for consistent deployment order
+                              relative_files.sort()
+                              if schema_name not in schema_files:
+                                  schema_files[schema_name] = []
+                              schema_files[schema_name].extend(relative_files)
+                              print(f"📁 Discovered {len(relative_files)} files for {schema_name} schema in {schema_path}: {relative_files}")
+                          else:
+                              print(f"⚠️ No SQL files found in {schema_path} matching patterns {include_patterns}")
                       else:
-                          print(f"⚠️ No SQL files found in {schema_path} matching patterns {include_patterns}")
-                  else:
-                      print(f"⚠️ Schema directory not found: {schema_path}")
+                          print(f"⚠️ Schema directory not found: {schema_path}")
               
               print(f"📋 Total discovered schema files: {sum(len(files) for files in schema_files.values())}")
               
@@ -506,8 +520,7 @@ jobs:
                       if schema in schema_files:
                           schema_changed_files = []
                           for file_path in schema_files[schema]:
-                              full_file_path = f"sql/{file_path}"
-                              if full_file_path in changed_files:
+                              if file_path in changed_files:
                                   schema_changed_files.append(file_path)
                                   print(f"📁 Will deploy changed file: {file_path}")
                           
@@ -525,12 +538,16 @@ jobs:
               
               # Always include permissions at the end if any schema is deployed
               if schemas:
-                  deployment_files.append("schemas/permissions.sql")
+                  deployment_files.append("Account/snowflake/schemas/permissions.sql")
               
               print(f"📋 Deploying {len(deployment_files)} SQL files in order...")
               
               for sql_file in deployment_files:
-                  file_path = f"sql/{sql_file}"
+                  # Handle different path formats - some already have full path, others need sql/ prefix
+                  if sql_file.startswith(('Account/', 'Customer/', 'shared/')):
+                      file_path = sql_file
+                  else:
+                      file_path = f"sql/{sql_file}"
                   print(f"🗄️ Executing: {file_path}")
                   
                   try:
@@ -834,8 +851,8 @@ jobs:
               cursor = conn.cursor()
               
               # Read and execute sample data file
-              print("📊 Loading sample data from 02_sample_data.sql...")
-              with open('sql/02_sample_data.sql', 'r') as f:
+              print("📊 Loading sample data from Account/snowflake/02_sample_data.sql...")
+              with open('Account/snowflake/02_sample_data.sql', 'r') as f:
                   sql_content = f.read()
               
               # Replace hardcoded database name with environment-specific database

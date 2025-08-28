@@ -1,32 +1,40 @@
 # Snowflake Deployment Configuration
-# This file defines the schema deployment order and dependencies
+# This file defines the schema deployment order and dependencies for the new project structure
 
 deployment:
   # Foundation files (always deployed first)
   foundation:
-    - "schemas/00_database_and_warehouse.sql"
+    - "Account/snowflake/schemas/00_database_and_warehouse.sql"
   
   # Schema deployment order (maintains dependencies)
   schemas:
     - name: "monitoring"
       description: "System monitoring and job tracking tables"
       dependencies: []
+      paths:
+        - "Customer/snowflake/monitoring/"
       
     - name: "raw_data"
       description: "Raw data tables, streams, and tasks"
       dependencies: ["monitoring"]
+      paths:
+        - "Account/snowflake/schemas/raw_data/"
       
     - name: "processed_data"
       description: "Transformed analytics tables and procedures" 
       dependencies: ["monitoring", "raw_data"]
+      paths:
+        - "Account/snowflake/schemas/processed_data/"
       
     - name: "reporting"
       description: "Views and reporting objects"
       dependencies: ["monitoring", "raw_data", "processed_data"]
+      paths:
+        - "shared/snowflake/reporting/"
   
   # Permissions (always deployed last)
   permissions:
-    - "schemas/permissions.sql"
+    - "Account/snowflake/schemas/permissions.sql"
 
 # File naming patterns to include/exclude
 file_patterns:
