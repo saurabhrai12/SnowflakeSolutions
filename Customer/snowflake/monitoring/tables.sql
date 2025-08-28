@@ -1,7 +1,7 @@
 -- Monitoring Schema Tables
 -- Uses CREATE OR ALTER for idempotent deployments
+-- Note: Database context is set by the deployment pipeline
 
-USE DATABASE analytics_platform;
 USE SCHEMA monitoring;
 
 -- Create or alter API calls tracking table
