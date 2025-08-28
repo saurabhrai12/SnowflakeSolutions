@@ -248,7 +248,32 @@ jobs:
       - name: 🔌 Test Snowflake Connection
         run: |
           echo "🔌 Testing Snowflake connection with CLI..."
-          snow connection test --connection default
+          echo "🔍 Debug connection configuration..."
+          echo "Environment: ${{ needs.setup.outputs.target_environment }}"
+          echo "Database: ${{ needs.setup.outputs.snowflake_database }}"
+          echo "Warehouse: ${{ needs.setup.outputs.snowflake_warehouse }}"
+          
+          # Check if config file exists and has correct permissions
+          if [ -f ~/.snowflake/config.toml ]; then
+            echo "✅ Config file exists"
+            ls -la ~/.snowflake/config.toml
+            echo "📋 Config file contents (secrets masked):"
+            sed 's/password = ".*"/password = "***MASKED***"/' ~/.snowflake/config.toml
+          else
+            echo "❌ Config file missing"
+            exit 1
+          fi
+          
+          # Test connection
+          snow connection test --connection default || {
+            echo "❌ Connection test failed"
+            echo "💡 Troubleshooting steps:"
+            echo "  1. Verify SNOWFLAKE_*_ACCOUNT, SNOWFLAKE_*_USER, SNOWFLAKE_*_PASSWORD secrets are set"
+            echo "  2. Check if account identifier format is correct (e.g., 'account-locator' or 'org-account')"
+            echo "  3. Verify user has appropriate permissions"
+            echo "  4. Check if IP allowlisting is required"
+            exit 1
+          }
           echo "✅ Snowflake CLI connection successful"
           
       - name: 🔍 Detect Changed Files
