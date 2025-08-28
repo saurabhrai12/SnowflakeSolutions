@@ -284,22 +284,47 @@ jobs:
           # Determine base reference for git diff
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE_REF="origin/${{ github.base_ref }}"
+            echo "📋 Pull request mode - comparing against: $BASE_REF"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # For manual triggers, compare against main branch if available, otherwise use HEAD~1
+            if git rev-parse --verify origin/main >/dev/null 2>&1; then
+              BASE_REF="origin/main"
+              echo "📋 Manual trigger - comparing against main branch: $BASE_REF"
+            else
+              BASE_REF="HEAD~1"
+              echo "📋 Manual trigger - comparing against previous commit: $BASE_REF"
+            fi
           else
             BASE_REF="HEAD~1"
+            echo "📋 Push trigger - comparing against previous commit: $BASE_REF"
           fi
           
           echo "base_ref=$BASE_REF" >> $GITHUB_OUTPUT
           
-          # Get changed SQL files
-          CHANGED_FILES=$(git diff --name-only $BASE_REF HEAD -- Account/snowflake/ Customer/snowflake/ shared/snowflake/ | grep '\.sql$' || true)
+          # Get changed SQL files with better error handling
+          echo "🔍 Running git diff: git diff --name-only $BASE_REF HEAD -- Account/snowflake/ Customer/snowflake/ shared/snowflake/"
+          
+          CHANGED_FILES=""
+          if git diff --name-only "$BASE_REF" HEAD -- Account/snowflake/ Customer/snowflake/ shared/snowflake/ >/dev/null 2>&1; then
+            CHANGED_FILES=$(git diff --name-only "$BASE_REF" HEAD -- Account/snowflake/ Customer/snowflake/ shared/snowflake/ | grep '\.sql$' || true)
+          else
+            echo "⚠️ Git diff failed, treating as full deployment"
+            # If git diff fails, find all SQL files for full deployment
+            CHANGED_FILES=$(find Account/snowflake/ Customer/snowflake/ shared/snowflake/ -name "*.sql" 2>/dev/null || true)
+          fi
+          
           echo "changed_files<<EOF" >> $GITHUB_OUTPUT
           echo "$CHANGED_FILES" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
           
           echo "📝 Changed SQL files:"
-          echo "$CHANGED_FILES" | while read -r file; do
-            [ -n "$file" ] && echo "  - $file"
-          done
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "$CHANGED_FILES" | while IFS= read -r file; do
+              [ -n "$file" ] && echo "  - $file"
+            done
+          else
+            echo "  (No SQL files changed)"
+          fi
           
       - name: 🗄️ Deploy SQL Schemas with Snowflake CLI
         if: needs.setup.outputs.dry_run == 'false'
