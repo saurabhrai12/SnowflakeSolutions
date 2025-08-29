@@ -6,6 +6,8 @@ environments:
   DEV:
     variables:
       environment: "dev"
+      account: "OILZKIQ-ID94597"
+      user: "SAURABHMAC"
       database: "analytics_platform_dev"
       warehouse: "analytics_wh_dev"
       warehouse_size: "SMALL"
@@ -15,6 +17,8 @@ environments:
   STAGING:
     variables:
       environment: "staging"
+      account: "OILZKIQ-ID94597"
+      user: "SAURABHMAC"
       database: "analytics_platform_staging"
       warehouse: "analytics_wh_staging"
       warehouse_size: "MEDIUM"
@@ -24,6 +28,8 @@ environments:
   PROD:
     variables:
       environment: "prod"
+      account: "OILZKIQ-ID94597"
+      user: "SAURABHMAC"
       database: "analytics_platform"
       warehouse: "analytics_wh"
       warehouse_size: "LARGE"

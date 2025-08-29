@@ -396,41 +396,47 @@ jobs:
           sudo chmod +x /usr/local/bin/yq
           python3 -m pip install PyYAML jinja2
           
-      - name: 📝 Create Snowflake Configuration (DEV)
-        if: needs.setup.outputs.target_environment == 'DEV'
+      - name: 📝 Create Snowflake Configuration
+        env:
+          ENVIRONMENT_VARS: ${{ needs.setup.outputs.environment_vars }}
+          TARGET_ENVIRONMENT: ${{ needs.setup.outputs.target_environment }}
         run: |
+          echo "📝 Creating Snowflake CLI configuration for $TARGET_ENVIRONMENT..."
           mkdir -p ~/.snowflake
-          cat > ~/.snowflake/config.toml << EOF
-          [connections.default]
-          account = "${{ secrets.SNOWFLAKE_DEV_ACCOUNT }}"
-          user = "${{ secrets.SNOWFLAKE_DEV_USER }}"
-          password = "${{ secrets.SNOWFLAKE_DEV_PASSWORD }}"
-          EOF
-          chmod 0600 ~/.snowflake/config.toml
           
-      - name: 📝 Create Snowflake Configuration (STAGING)
-        if: needs.setup.outputs.target_environment == 'STAGING'
-        run: |
-          mkdir -p ~/.snowflake
-          cat > ~/.snowflake/config.toml << EOF
-          [connections.default]
-          account = "${{ secrets.SNOWFLAKE_STAGING_ACCOUNT }}"
-          user = "${{ secrets.SNOWFLAKE_STAGING_USER }}"
-          password = "${{ secrets.SNOWFLAKE_STAGING_PASSWORD }}"
-          EOF
-          chmod 0600 ~/.snowflake/config.toml
+          # Extract account and user from environment variables
+          ACCOUNT=$(echo "$ENVIRONMENT_VARS" | python3 -c "import sys, json; config=json.load(sys.stdin); print(config['account'])")
+          USER=$(echo "$ENVIRONMENT_VARS" | python3 -c "import sys, json; config=json.load(sys.stdin); print(config['user'])")
           
-      - name: 📝 Create Snowflake Configuration (PROD)
-        if: needs.setup.outputs.target_environment == 'PROD'
-        run: |
-          mkdir -p ~/.snowflake
+          # Get password from the appropriate secret based on environment
+          case "$TARGET_ENVIRONMENT" in
+            "DEV")
+              PASSWORD="${{ secrets.SNOWFLAKE_DEV_PASSWORD }}"
+              ;;
+            "STAGING")
+              PASSWORD="${{ secrets.SNOWFLAKE_STAGING_PASSWORD }}"
+              ;;
+            "PROD")
+              PASSWORD="${{ secrets.SNOWFLAKE_PROD_PASSWORD }}"
+              ;;
+            *)
+              echo "❌ Unknown environment: $TARGET_ENVIRONMENT"
+              exit 1
+              ;;
+          esac
+          
+          # Create the configuration file
           cat > ~/.snowflake/config.toml << EOF
           [connections.default]
-          account = "${{ secrets.SNOWFLAKE_PROD_ACCOUNT }}"
-          user = "${{ secrets.SNOWFLAKE_PROD_USER }}"
-          password = "${{ secrets.SNOWFLAKE_PROD_PASSWORD }}"
+          account = "$ACCOUNT"
+          user = "$USER"
+          password = "$PASSWORD"
           EOF
+          
           chmod 0600 ~/.snowflake/config.toml
+          echo "✅ Snowflake configuration created for $TARGET_ENVIRONMENT"
+          echo "📋 Account: $ACCOUNT"
+          echo "📋 User: $USER"
           
       - name: 🔌 Test Snowflake Connection
         run: |
