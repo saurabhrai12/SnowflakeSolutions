@@ -222,3 +222,43 @@ validation:
   check_jinja_syntax: true
   validate_sql_syntax: false  # Requires Snowflake connection
   check_dependencies: true
+
+# SchemaChange specific configuration
+schemachange:
+  version_table: "SCHEMACHANGE_HISTORY"
+  create_version_table: true
+  version_prefix: "V"
+  version_separator: "__"
+  file_naming:
+    pattern: "V{version}__{domain}_{path}_{filename}.sql"
+    description: "SchemaChange compatible file naming"
+  
+  # Version increment rules
+  version_rules:
+    feature_branch: "patch"      # feature/* branches increment patch version
+    main_branch: "minor"         # main branch increments minor version
+    manual_major: "major"        # manual deployments can increment major version
+    
+  # CREATE OR REPLACE conversion settings
+  conversion:
+    enabled: true
+    objects:
+      - "TABLE"
+      - "VIEW" 
+      - "FUNCTION"
+      - "PROCEDURE"
+      - "STREAM"
+      - "TASK"
+      - "PIPE"
+      - "STAGE"
+      - "FILE FORMAT"
+      - "DATABASE"
+      - "SCHEMA"
+      - "WAREHOUSE"
+    
+  # Deployment settings
+  deployment:
+    role: "SYSADMIN"
+    create_change_history_table: true
+    verbose: true
+    dry_run_preview: true

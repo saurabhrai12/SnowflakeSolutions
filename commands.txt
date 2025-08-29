@@ -1,0 +1,14 @@
+CREATE OR REPLACE API INTEGRATION git_api_integration
+    API_PROVIDER = git_https_api
+    API_ALLOWED_PREFIXES = ('https://github.com/')
+    ENABLED = TRUE;
+
+   
+
+      CREATE OR REPLACE GIT REPOSITORY analytics_platform_git_repo
+    API_INTEGRATION = git_api_integration
+    ORIGIN = 'https://github.com/saurabhrai12/SnowflakeSolutions.git';
+
+
+   select * from  ANALYTICS_PLATFORM_DEV.REPORTING.CUSTOMER_360;
+    

@@ -1,0 +1,725 @@
+name: 🗄️ Snowflake SchemaChange Domain-Based Deployment
+
+# Advanced deployment using Snowflake SchemaChange with versioning and CREATE OR REPLACE
+# Supports domain-based architecture with dependency management and version control
+
+on:
+  # Manual trigger with advanced deployment options
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: 'Target Environment'
+        required: true
+        default: 'DEV'
+        type: choice
+        options:
+          - DEV
+          - STAGING
+          - PROD
+      deployment_mode:
+        description: 'Deployment Mode'
+        required: true
+        default: 'full_deployment'
+        type: choice
+        options:
+          - single_domain
+          - full_deployment
+          - changed_only
+      target_domain:
+        description: 'Target Domain (for single_domain mode)'
+        required: false
+        default: 'shared'
+        type: choice
+        options:
+          - shared
+          - account
+          - asset
+          - customer
+      version_increment:
+        description: 'Version Increment Type'
+        required: true
+        default: 'minor'
+        type: choice
+        options:
+          - major
+          - minor
+          - patch
+      force_version:
+        description: 'Force Specific Version (optional, format: v1.2.3)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Dry Run (show what would be deployed)'
+        required: true
+        default: true
+        type: boolean
+      
+  # Automatic triggers: feature branches → DEV, main → STAGING
+  push:
+    branches: [ main, 'feature/**', 'feat/**', 'dev/**' ]
+    paths: [ 'Account/snowflake/**', 'Customer/snowflake/**', 'Asset/snowflake/**', 'shared/snowflake/**' ]
+
+  pull_request:
+    branches: [ main ]
+    paths: [ 'Account/snowflake/**', 'Customer/snowflake/**', 'Asset/snowflake/**', 'shared/snowflake/**' ]
+
+env:
+  SCHEMACHANGE_VERSION: "3.6.0"
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # Job 1: Setup, versioning, and determine deployment parameters
+  setup:
+    name: 🔧 Setup SchemaChange Deployment
+    runs-on: ubuntu-latest
+    outputs:
+      target_environment: ${{ steps.setup.outputs.target_environment }}
+      environment_vars: ${{ steps.setup.outputs.environment_vars }}
+      deployment_mode: ${{ steps.setup.outputs.deployment_mode }}
+      target_domain: ${{ steps.setup.outputs.target_domain }}
+      domains_to_deploy: ${{ steps.setup.outputs.domains_to_deploy }}
+      deployment_version: ${{ steps.setup.outputs.deployment_version }}
+      dry_run: ${{ steps.setup.outputs.dry_run }}
+      
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Needed for versioning and git diff
+        
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+        
+      - name: 🔧 Install Dependencies
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          python -m pip install --upgrade pip
+          pip install schemachange==${{ env.SCHEMACHANGE_VERSION }} PyYAML jinja2
+        
+      - name: 🎯 Determine Deployment Parameters and Versioning
+        id: setup
+        run: |
+          # Determine target environment based on trigger
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TARGET_ENV="${{ github.event.inputs.target_environment }}"
+            DEPLOYMENT_MODE="${{ github.event.inputs.deployment_mode }}"
+            TARGET_DOMAIN="${{ github.event.inputs.target_domain }}"
+            VERSION_INCREMENT="${{ github.event.inputs.version_increment }}"
+            FORCE_VERSION="${{ github.event.inputs.force_version }}"
+            DRY_RUN="${{ github.event.inputs.dry_run }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+              TARGET_ENV="STAGING"
+              VERSION_INCREMENT="minor"
+            else
+              TARGET_ENV="DEV"
+              VERSION_INCREMENT="patch"
+            fi
+            DEPLOYMENT_MODE="changed_only"
+            TARGET_DOMAIN=""
+            FORCE_VERSION=""
+            DRY_RUN="false"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            TARGET_ENV="DEV"
+            DEPLOYMENT_MODE="changed_only"
+            TARGET_DOMAIN=""
+            VERSION_INCREMENT="patch"
+            FORCE_VERSION=""
+            DRY_RUN="true"
+          fi
+          
+          # Get environment variables from configuration
+          ENVIRONMENT_VARS=$(yq eval ".environments.$TARGET_ENV.variables" .github/deployment-config.yml -o=json -I=0)
+          
+          # Create Python script for domain resolution and versioning
+          cat > setup_deployment.py << 'EOF'
+          import yaml
+          import json
+          import os
+          import subprocess
+          import re
+          from typing import List, Dict, Set
+          from datetime import datetime
+          
+          def load_config():
+              with open('.github/deployment-config.yml', 'r') as f:
+                  return yaml.safe_load(f)
+          
+          def get_changed_files():
+              """Get list of changed files using git diff"""
+              try:
+                  if os.environ.get('GITHUB_EVENT_NAME') == 'pull_request':
+                      cmd = ['git', 'diff', '--name-only', 'origin/${{ github.base_ref }}...HEAD']
+                  else:
+                      cmd = ['git', 'diff', '--name-only', 'HEAD~1..HEAD']
+                  
+                  result = subprocess.run(cmd, capture_output=True, text=True)
+                  return result.stdout.strip().split('\n') if result.stdout.strip() else []
+              except:
+                  return []
+          
+          def get_latest_version():
+              """Get the latest version from git tags"""
+              try:
+                  result = subprocess.run(['git', 'tag', '--sort=-version:refname'], 
+                                        capture_output=True, text=True)
+                  tags = result.stdout.strip().split('\n')
+                  
+                  for tag in tags:
+                      if re.match(r'^v\d+\.\d+\.\d+$', tag):
+                          return tag
+                  return 'v0.0.0'
+              except:
+                  return 'v0.0.0'
+          
+          def increment_version(version: str, increment_type: str) -> str:
+              """Increment version based on type"""
+              # Remove 'v' prefix if present
+              version = version.lstrip('v')
+              
+              try:
+                  major, minor, patch = map(int, version.split('.'))
+              except:
+                  major, minor, patch = 0, 0, 0
+              
+              if increment_type == 'major':
+                  major += 1
+                  minor = 0
+                  patch = 0
+              elif increment_type == 'minor':
+                  minor += 1
+                  patch = 0
+              else:  # patch
+                  patch += 1
+              
+              return f"v{major}.{minor}.{patch}"
+          
+          def resolve_domain_dependencies(config: Dict, target_domains: Set[str]) -> List[str]:
+              """Resolve domain dependencies and return deployment order"""
+              domains = config['domains']
+              domain_map = {d['name']: d for d in domains}
+              
+              resolved = []
+              visited = set()
+              temp_visited = set()
+              
+              def visit(domain_name: str):
+                  if domain_name in temp_visited:
+                      raise ValueError(f"Circular dependency detected involving {domain_name}")
+                  if domain_name in visited:
+                      return
+                  
+                  temp_visited.add(domain_name)
+                  
+                  domain = domain_map.get(domain_name)
+                  if domain:
+                      for dep in domain.get('depends_on', []):
+                          if dep in target_domains:
+                              visit(dep)
+                          elif dep not in target_domains:
+                              target_domains.add(dep)
+                              visit(dep)
+                  
+                  temp_visited.remove(domain_name)
+                  visited.add(domain_name)
+                  if domain_name not in resolved:
+                      resolved.append(domain_name)
+              
+              for domain in domains:
+                  if domain.get('deploy_first') and domain['name'] in target_domains:
+                      visit(domain['name'])
+              
+              for domain_name in list(target_domains):
+                  visit(domain_name)
+              
+              return resolved
+          
+          def determine_domains_to_deploy():
+              config = load_config()
+              deployment_mode = os.environ.get('DEPLOYMENT_MODE', 'full_deployment')
+              target_domain = os.environ.get('TARGET_DOMAIN', '')
+              
+              if deployment_mode == 'single_domain':
+                  if not target_domain:
+                      raise ValueError("target_domain required for single_domain mode")
+                  target_domains = {target_domain}
+                  
+              elif deployment_mode == 'full_deployment':
+                  target_domains = {d['name'] for d in config['domains']}
+                  
+              elif deployment_mode == 'changed_only':
+                  changed_files = get_changed_files()
+                  target_domains = set()
+                  
+                  for file_path in changed_files:
+                      if file_path.endswith('.sql'):
+                          for domain in config['domains']:
+                              if file_path.startswith(domain['path']):
+                                  target_domains.add(domain['name'])
+                                  break
+                  
+                  if not target_domains:
+                      target_domains = {'shared'}
+              
+              else:
+                  raise ValueError(f"Unknown deployment mode: {deployment_mode}")
+              
+              deployment_order = resolve_domain_dependencies(config, target_domains)
+              return deployment_order
+          
+          def determine_version():
+              force_version = os.environ.get('FORCE_VERSION', '').strip()
+              if force_version:
+                  if not re.match(r'^v\d+\.\d+\.\d+$', force_version):
+                      raise ValueError(f"Invalid version format: {force_version}. Use format: v1.2.3")
+                  return force_version
+              
+              latest_version = get_latest_version()
+              increment_type = os.environ.get('VERSION_INCREMENT', 'patch')
+              new_version = increment_version(latest_version, increment_type)
+              
+              return new_version
+          
+          # Main execution
+          try:
+              domains_to_deploy = determine_domains_to_deploy()
+              deployment_version = determine_version()
+              
+              print(f"Domains to deploy: {domains_to_deploy}")
+              print(f"Deployment version: {deployment_version}")
+              print("DOMAINS:" + json.dumps(domains_to_deploy))
+              print("VERSION:" + deployment_version)
+          except Exception as e:
+              print(f"Error: {e}")
+              print("DOMAINS:" + json.dumps(["shared"]))
+              print("VERSION:v0.1.0")
+          EOF
+          
+          # Set environment variables for Python script
+          export DEPLOYMENT_MODE="$DEPLOYMENT_MODE"
+          export TARGET_DOMAIN="$TARGET_DOMAIN"
+          export VERSION_INCREMENT="$VERSION_INCREMENT"
+          export FORCE_VERSION="$FORCE_VERSION"
+          export GITHUB_EVENT_NAME="${{ github.event_name }}"
+          
+          # Run setup script
+          SETUP_OUTPUT=$(python setup_deployment.py)
+          DOMAINS_TO_DEPLOY=$(echo "$SETUP_OUTPUT" | grep "DOMAINS:" | cut -d':' -f2-)
+          DEPLOYMENT_VERSION=$(echo "$SETUP_OUTPUT" | grep "VERSION:" | cut -d':' -f2)
+          
+          # Output parameters
+          echo "target_environment=$TARGET_ENV" >> $GITHUB_OUTPUT
+          echo "deployment_mode=$DEPLOYMENT_MODE" >> $GITHUB_OUTPUT
+          echo "target_domain=$TARGET_DOMAIN" >> $GITHUB_OUTPUT
+          echo "domains_to_deploy=$DOMAINS_TO_DEPLOY" >> $GITHUB_OUTPUT
+          echo "deployment_version=$DEPLOYMENT_VERSION" >> $GITHUB_OUTPUT
+          echo "dry_run=$DRY_RUN" >> $GITHUB_OUTPUT
+          
+          # Output environment variables
+          {
+            echo 'environment_vars<<EOF'
+            echo "$ENVIRONMENT_VARS"
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
+          
+          # Display deployment plan
+          echo "## 🗄️ SchemaChange Deployment Plan" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** $TARGET_ENV" >> $GITHUB_STEP_SUMMARY
+          echo "**Deployment Mode:** $DEPLOYMENT_MODE" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** $DEPLOYMENT_VERSION" >> $GITHUB_STEP_SUMMARY
+          echo "**Domains:** $DOMAINS_TO_DEPLOY" >> $GITHUB_STEP_SUMMARY
+          echo "**Dry Run:** $DRY_RUN" >> $GITHUB_STEP_SUMMARY
+
+  # Job 2: Process SQL Templates and Create Versioned Files
+  process_templates:
+    name: 📊 Process Templates & Version Files
+    runs-on: ubuntu-latest
+    needs: [setup]
+    
+    strategy:
+      matrix:
+        domain: ${{ fromJson(needs.setup.outputs.domains_to_deploy) }}
+      fail-fast: false
+    
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+        
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+        
+      - name: 🔧 Install Dependencies
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          python -m pip install --upgrade pip
+          pip install PyYAML jinja2
+        
+      - name: 📊 Process SQL Templates for Domain
+        env:
+          ENVIRONMENT_VARS: ${{ needs.setup.outputs.environment_vars }}
+          CURRENT_DOMAIN: ${{ matrix.domain }}
+          DEPLOYMENT_VERSION: ${{ needs.setup.outputs.deployment_version }}
+        run: |
+          echo "📊 Processing templates for domain: $CURRENT_DOMAIN"
+          mkdir -p versioned-sql
+          
+          # Create advanced template processor with CREATE OR REPLACE conversion
+          cat > process_schemachange_templates.py << 'EOF'
+          import json
+          import os
+          import glob
+          import yaml
+          import re
+          from jinja2 import Template, Environment, FileSystemLoader
+          from pathlib import Path
+          from datetime import datetime
+          
+          def load_config():
+              with open('.github/deployment-config.yml', 'r') as f:
+                  return yaml.safe_load(f)
+          
+          def convert_to_create_or_replace(sql_content: str) -> str:
+              """Convert CREATE OR ALTER statements to CREATE OR REPLACE"""
+              
+              # Pattern to match CREATE OR ALTER statements
+              patterns = [
+                  (r'\bCREATE\s+OR\s+ALTER\s+(TABLE)\b', r'CREATE OR REPLACE \1'),
+                  (r'\bCREATE\s+OR\s+ALTER\s+(VIEW)\b', r'CREATE OR REPLACE \1'),
+                  (r'\bCREATE\s+OR\s+ALTER\s+(FUNCTION)\b', r'CREATE OR REPLACE \1'),
+                  (r'\bCREATE\s+OR\s+ALTER\s+(PROCEDURE)\b', r'CREATE OR REPLACE \1'),
+                  (r'\bCREATE\s+OR\s+ALTER\s+(STREAM)\b', r'CREATE OR REPLACE \1'),
+                  (r'\bCREATE\s+OR\s+ALTER\s+(TASK)\b', r'CREATE OR REPLACE \1'),
+                  (r'\bCREATE\s+OR\s+ALTER\s+(PIPE)\b', r'CREATE OR REPLACE \1'),
+                  (r'\bCREATE\s+OR\s+ALTER\s+(STAGE)\b', r'CREATE OR REPLACE \1'),
+                  (r'\bCREATE\s+OR\s+ALTER\s+(FILE\s+FORMAT)\b', r'CREATE OR REPLACE \1'),
+                  (r'\bCREATE\s+OR\s+ALTER\s+(DATABASE)\b', r'CREATE OR REPLACE \1'),
+                  (r'\bCREATE\s+OR\s+ALTER\s+(SCHEMA)\b', r'CREATE OR REPLACE \1'),
+                  (r'\bCREATE\s+OR\s+ALTER\s+(WAREHOUSE)\b', r'CREATE OR REPLACE \1'),
+              ]
+              
+              converted_content = sql_content
+              changes_made = []
+              
+              for pattern, replacement in patterns:
+                  matches = re.finditer(pattern, converted_content, re.IGNORECASE)
+                  if matches:
+                      for match in matches:
+                          changes_made.append(f"Converted {match.group().upper()}")
+                      converted_content = re.sub(pattern, replacement, converted_content, flags=re.IGNORECASE)
+              
+              if changes_made:
+                  print(f"    🔄 Conversions made: {', '.join(set(changes_made))}")
+              
+              return converted_content
+          
+          def generate_version_header(file_path: str, version: str) -> str:
+              """Generate version header for SchemaChange"""
+              timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+              
+              # Extract version number for SchemaChange naming
+              version_num = version.lstrip('v').replace('.', '_')
+              
+              # Get relative path for better identification
+              rel_path = os.path.relpath(file_path, '.')
+              
+              header = f"""-- SchemaChange Version: {version}
+-- Generated: {timestamp}
+-- File: {rel_path}
+-- Domain: {os.environ.get('CURRENT_DOMAIN', 'unknown')}
+-- Environment: {json.loads(os.environ['ENVIRONMENT_VARS']).get('environment', 'unknown')}
+
+"""
+              return header
+          
+          # Get environment variables and domain info
+          env_vars = json.loads(os.environ['ENVIRONMENT_VARS'])
+          current_domain = os.environ['CURRENT_DOMAIN']
+          deployment_version = os.environ['DEPLOYMENT_VERSION']
+          config = load_config()
+          
+          print(f"Processing domain: {current_domain}")
+          print(f"Version: {deployment_version}")
+          print(f"Environment variables: {env_vars}")
+          
+          # Find domain configuration
+          domain_config = None
+          for domain in config['domains']:
+              if domain['name'] == current_domain:
+                  domain_config = domain
+                  break
+          
+          if not domain_config:
+              print(f"❌ Domain {current_domain} not found in configuration")
+              exit(1)
+          
+          domain_path = domain_config['path']
+          
+          # Set up Jinja environment
+          jinja_env = Environment(loader=FileSystemLoader('.'))
+          
+          # Process SQL files for this domain
+          pattern = f"{domain_path}/**/*.sql"
+          sql_files = glob.glob(pattern, recursive=True)
+          processed_count = 0
+          
+          for sql_file in sql_files:
+              # Skip excluded patterns
+              skip_file = False
+              for exclude_pattern in config['file_patterns']['exclude_patterns']:
+                  if Path(sql_file).match(exclude_pattern.replace('**/', '')):
+                      skip_file = True
+                      break
+              
+              if skip_file:
+                  print(f"⏭️ Skipped (excluded): {sql_file}")
+                  continue
+              
+              try:
+                  # Process Jinja template
+                  template = jinja_env.get_template(sql_file)
+                  rendered = template.render(**env_vars)
+                  
+                  # Convert CREATE OR ALTER to CREATE OR REPLACE
+                  converted = convert_to_create_or_replace(rendered)
+                  
+                  # Add version header
+                  version_header = generate_version_header(sql_file, deployment_version)
+                  final_content = version_header + converted
+                  
+                  # Create versioned output path with SchemaChange naming convention
+                  version_num = deployment_version.lstrip('v').replace('.', '_')
+                  base_name = os.path.splitext(os.path.basename(sql_file))[0]
+                  dir_path = os.path.dirname(sql_file).replace('/', '_').replace('\\', '_')
+                  
+                  # SchemaChange naming: V<version>__<description>.sql
+                  versioned_name = f"V{version_num}__{current_domain}_{dir_path}_{base_name}.sql"
+                  output_file = f"versioned-sql/{versioned_name}"
+                  
+                  # Write processed file
+                  os.makedirs(os.path.dirname(output_file), exist_ok=True)
+                  with open(output_file, 'w') as f:
+                      f.write(final_content)
+                  
+                  print(f"✅ Processed: {sql_file} -> {versioned_name}")
+                  processed_count += 1
+                  
+              except Exception as e:
+                  print(f"❌ Error processing {sql_file}: {e}")
+                  exit(1)
+          
+          print(f"🎉 Processed {processed_count} SQL files for domain {current_domain}")
+          EOF
+          
+          # Run template processor
+          python process_schemachange_templates.py
+        
+      - name: 📦 Upload Versioned SQL Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: versioned-sql-${{ matrix.domain }}-${{ needs.setup.outputs.deployment_version }}
+          path: versioned-sql/
+          retention-days: 30
+
+  # Job 3: SchemaChange Deployment
+  deploy:
+    name: 🚀 SchemaChange Domain Deployment
+    runs-on: ubuntu-latest
+    needs: [setup, process_templates]
+    if: needs.setup.outputs.dry_run == 'false'
+    
+    strategy:
+      matrix:
+        domain: ${{ fromJson(needs.setup.outputs.domains_to_deploy) }}
+      fail-fast: false
+    
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+        
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+        
+      - name: 🔧 Install SchemaChange and Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install schemachange==${{ env.SCHEMACHANGE_VERSION }} PyYAML
+        
+      - name: 📦 Download Versioned SQL Artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: versioned-sql-${{ matrix.domain }}-${{ needs.setup.outputs.deployment_version }}
+          path: versioned-sql/
+        
+      - name: 📝 Create Snowflake Configuration
+        env:
+          ENVIRONMENT_VARS: ${{ needs.setup.outputs.environment_vars }}
+          TARGET_ENVIRONMENT: ${{ needs.setup.outputs.target_environment }}
+        run: |
+          echo "📝 Creating Snowflake configuration for $TARGET_ENVIRONMENT..."
+          
+          # Extract connection details
+          ACCOUNT=$(echo "$ENVIRONMENT_VARS" | python -c "import sys, json; config=json.load(sys.stdin); print(config['account'])")
+          USER=$(echo "$ENVIRONMENT_VARS" | python -c "import sys, json; config=json.load(sys.stdin); print(config['user'])")
+          DATABASE=$(echo "$ENVIRONMENT_VARS" | python -c "import sys, json; config=json.load(sys.stdin); print(config['database'])")
+          WAREHOUSE=$(echo "$ENVIRONMENT_VARS" | python -c "import sys, json; config=json.load(sys.stdin); print(config['warehouse'])")
+          
+          # Get password from secrets
+          case "$TARGET_ENVIRONMENT" in
+            "DEV")
+              PASSWORD="${{ secrets.SNOWFLAKE_DEV_PASSWORD }}"
+              ;;
+            "STAGING")
+              PASSWORD="${{ secrets.SNOWFLAKE_STAGING_PASSWORD }}"
+              ;;
+            "PROD")
+              PASSWORD="${{ secrets.SNOWFLAKE_PROD_PASSWORD }}"
+              ;;
+            *)
+              echo "❌ Unknown environment: $TARGET_ENVIRONMENT"
+              exit 1
+              ;;
+          esac
+          
+          # Set environment variables for SchemaChange
+          echo "SNOWFLAKE_ACCOUNT=$ACCOUNT" >> $GITHUB_ENV
+          echo "SNOWFLAKE_USER=$USER" >> $GITHUB_ENV
+          echo "SNOWFLAKE_PASSWORD=$PASSWORD" >> $GITHUB_ENV
+          echo "SNOWFLAKE_DATABASE=$DATABASE" >> $GITHUB_ENV
+          echo "SNOWFLAKE_WAREHOUSE=$WAREHOUSE" >> $GITHUB_ENV
+          echo "SNOWFLAKE_ROLE=SYSADMIN" >> $GITHUB_ENV
+          
+          echo "✅ Configuration set for $TARGET_ENVIRONMENT"
+          echo "📋 Account: $ACCOUNT"
+          echo "📋 User: $USER"
+          echo "📋 Database: $DATABASE"
+          echo "📋 Warehouse: $WAREHOUSE"
+        
+      - name: 🚀 Deploy with SchemaChange
+        env:
+          CURRENT_DOMAIN: ${{ matrix.domain }}
+          DEPLOYMENT_VERSION: ${{ needs.setup.outputs.deployment_version }}
+        run: |
+          echo "🚀 Deploying domain: $CURRENT_DOMAIN with SchemaChange"
+          
+          # Check if we have files to deploy
+          if [ ! -d "versioned-sql" ] || [ -z "$(ls -A versioned-sql/)" ]; then
+            echo "⚠️ No versioned SQL files found for domain $CURRENT_DOMAIN"
+            exit 0
+          fi
+          
+          echo "📋 Files to deploy:"
+          ls -la versioned-sql/
+          
+          # Run SchemaChange deployment
+          schemachange deploy \
+            --config-folder versioned-sql \
+            --root-folder versioned-sql \
+            --snowflake-account "$SNOWFLAKE_ACCOUNT" \
+            --snowflake-user "$SNOWFLAKE_USER" \
+            --snowflake-password "$SNOWFLAKE_PASSWORD" \
+            --snowflake-database "$SNOWFLAKE_DATABASE" \
+            --snowflake-warehouse "$SNOWFLAKE_WAREHOUSE" \
+            --snowflake-role "$SNOWFLAKE_ROLE" \
+            --change-history-table "SCHEMACHANGE_HISTORY" \
+            --create-change-history-table \
+            --verbose
+          
+          echo "✅ SchemaChange deployment completed for domain: $CURRENT_DOMAIN"
+        
+      - name: 🏷️ Create Git Tag (Shared Domain Only)
+        if: matrix.domain == 'shared' && needs.setup.outputs.target_environment == 'PROD'
+        env:
+          DEPLOYMENT_VERSION: ${{ needs.setup.outputs.deployment_version }}
+        run: |
+          echo "🏷️ Creating git tag: $DEPLOYMENT_VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$DEPLOYMENT_VERSION" -m "SchemaChange deployment $DEPLOYMENT_VERSION"
+          git push origin "$DEPLOYMENT_VERSION"
+          echo "✅ Git tag created: $DEPLOYMENT_VERSION"
+
+  # Job 4: SchemaChange Dry Run Report
+  dry_run:
+    name: 🔍 SchemaChange Dry Run Report
+    runs-on: ubuntu-latest
+    needs: [setup, process_templates]
+    if: needs.setup.outputs.dry_run == 'true'
+    
+    steps:
+      - name: 📦 Download All Versioned SQL Artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: all-versioned-sql/
+        
+      - name: 🔍 Generate SchemaChange Dry Run Report
+        run: |
+          echo "🔍 SCHEMACHANGE DRY RUN - No actual deployment performed"
+          
+          echo "## 🗄️ SchemaChange Deployment Plan" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ needs.setup.outputs.target_environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Deployment Mode:** ${{ needs.setup.outputs.deployment_mode }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.setup.outputs.deployment_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Domains:** ${{ needs.setup.outputs.domains_to_deploy }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Versioned SQL Files Generated:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          # List all generated files
+          for domain_dir in all-versioned-sql/*/; do
+            if [ -d "$domain_dir" ]; then
+              echo "Domain: $(basename "$domain_dir")" >> $GITHUB_STEP_SUMMARY
+              find "$domain_dir" -name "*.sql" -exec basename {} \; | sort >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+          
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### SchemaChange Command Preview:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "schemachange deploy \\" >> $GITHUB_STEP_SUMMARY
+          echo "  --root-folder versioned-sql \\" >> $GITHUB_STEP_SUMMARY
+          echo "  --snowflake-database ${{ fromJson(needs.setup.outputs.environment_vars).database }} \\" >> $GITHUB_STEP_SUMMARY
+          echo "  --snowflake-warehouse ${{ fromJson(needs.setup.outputs.environment_vars).warehouse }} \\" >> $GITHUB_STEP_SUMMARY
+          echo "  --change-history-table SCHEMACHANGE_HISTORY \\" >> $GITHUB_STEP_SUMMARY
+          echo "  --create-change-history-table \\" >> $GITHUB_STEP_SUMMARY
+          echo "  --verbose" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # Job 5: Deployment Summary and Notification
+  notify:
+    name: 📢 Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [setup, deploy, dry_run]
+    if: always()
+    
+    steps:
+      - name: 📢 Generate SchemaChange Deployment Summary
+        run: |
+          echo "## 🗄️ SchemaChange Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ needs.setup.outputs.target_environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Mode:** ${{ needs.setup.outputs.deployment_mode }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.setup.outputs.deployment_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Domains:** ${{ needs.setup.outputs.domains_to_deploy }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.deploy.result }}" = "success" ]; then
+            echo "🎉 **Status:** SchemaChange deployment completed successfully!" >> $GITHUB_STEP_SUMMARY
+            echo "🎉 SchemaChange deployment ${{ needs.setup.outputs.deployment_version }} to ${{ needs.setup.outputs.target_environment }} completed successfully!"
+          elif [ "${{ needs.dry_run.result }}" = "success" ]; then
+            echo "🔍 **Status:** Dry run completed successfully!" >> $GITHUB_STEP_SUMMARY
+            echo "🔍 SchemaChange dry run for ${{ needs.setup.outputs.target_environment }} completed successfully!"
+          else
+            echo "❌ **Status:** SchemaChange deployment failed!" >> $GITHUB_STEP_SUMMARY
+            echo "❌ SchemaChange deployment failed. Check the logs for details."
+            exit 1
+          fi
