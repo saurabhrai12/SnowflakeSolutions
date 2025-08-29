@@ -36,11 +36,7 @@ on:
     branches: [ main ]
     paths: [ 'Account/snowflake/**', 'Customer/snowflake/**', 'shared/snowflake/**' ]
 
-env:
-  # Default Snowflake CLI environment variables
-  SNOWFLAKE_CONNECTIONS_DEFAULT_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-  SNOWFLAKE_CONNECTIONS_DEFAULT_USER: ${{ secrets.SNOWFLAKE_USER }}
-  SNOWFLAKE_CONNECTIONS_DEFAULT_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+# Note: Snowflake environment variables will be set per job based on target environment
 
 jobs:
   # Job 1: Setup and determine deployment parameters
@@ -87,17 +83,23 @@ jobs:
           fi
           
           # Get environment variables from configuration
-          ENVIRONMENT_VARS=$(yq eval ".environments.$TARGET_ENV.variables" .github/deployment-config.yml -o=json)
+          ENVIRONMENT_VARS=$(yq eval ".environments.$TARGET_ENV.variables" .github/deployment-config.yml -o=json -I=0)
           
           # Generate Git repository name (for Snowflake Git integration)
           GIT_REPO_NAME="analytics_platform_git_repo"
           
           # Output parameters
           echo "target_environment=$TARGET_ENV" >> $GITHUB_OUTPUT
-          echo "environment_vars=$ENVIRONMENT_VARS" >> $GITHUB_OUTPUT
           echo "dry_run=$DRY_RUN" >> $GITHUB_OUTPUT
           echo "load_sample_data=$LOAD_SAMPLE_DATA" >> $GITHUB_OUTPUT
           echo "git_repo_name=$GIT_REPO_NAME" >> $GITHUB_OUTPUT
+          
+          # Output environment variables using delimiter to handle multiline JSON
+          {
+            echo 'environment_vars<<EOF'
+            echo "$ENVIRONMENT_VARS"
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
           
           # Display deployment plan
           echo "## 🗄️ Deployment Plan" >> $GITHUB_STEP_SUMMARY
@@ -161,6 +163,12 @@ jobs:
     needs: [setup, validate]
     if: needs.setup.outputs.dry_run == 'false'
     
+    env:
+      # Set environment-specific Snowflake credentials
+      SNOWFLAKE_CONNECTIONS_DEFAULT_ACCOUNT: ${{ secrets[format('SNOWFLAKE_{0}_ACCOUNT', needs.setup.outputs.target_environment)] }}
+      SNOWFLAKE_CONNECTIONS_DEFAULT_USER: ${{ secrets[format('SNOWFLAKE_{0}_USER', needs.setup.outputs.target_environment)] }}
+      SNOWFLAKE_CONNECTIONS_DEFAULT_PASSWORD: ${{ secrets[format('SNOWFLAKE_{0}_PASSWORD', needs.setup.outputs.target_environment)] }}
+    
     steps:
       - name: 📥 Checkout Code
         uses: actions/checkout@v4
@@ -177,70 +185,115 @@ jobs:
           snow connection test --connection default
           echo "✅ Snowflake CLI connection successful"
           
-      - name: 📊 Setup Git Repository in Snowflake
+      - name: 🔧 Install Template Processor
         run: |
-          echo "📊 Setting up Git repository in Snowflake..."
+          echo "🔧 Installing Python for template processing..."
+          python3 -m pip install jinja2
           
-          # Create or replace Git repository reference
-          snow sql -q "CREATE OR REPLACE GIT REPOSITORY ${{ needs.setup.outputs.git_repo_name }}
-            API_INTEGRATION = git_api_integration
-            GIT_CREDENTIALS = git_secret
-            ORIGIN = '${{ github.server_url }}/${{ github.repository }}.git'" --connection default
-          
-          echo "✅ Git repository configured: ${{ needs.setup.outputs.git_repo_name }}"
-          
-      - name: 🔄 Fetch Latest Repository Changes
+      - name: 📊 Process SQL Templates
+        env:
+          ENVIRONMENT_VARS: ${{ needs.setup.outputs.environment_vars }}
         run: |
-          echo "🔄 Fetching latest repository changes..."
-          snow git fetch ${{ needs.setup.outputs.git_repo_name }}
-          echo "✅ Repository changes fetched successfully"
+          echo "📊 Processing Jinja templates in SQL files..."
+          mkdir -p processed-sql
+          
+          # Create Python script to process Jinja templates
+          cat > process_templates.py << 'EOF'
+          import json
+          import os
+          import glob
+          from jinja2 import Template, Environment, FileSystemLoader
+          
+          # Get environment variables
+          env_vars = json.loads(os.environ['ENVIRONMENT_VARS'])
+          print(f"Using environment variables: {env_vars}")
+          
+          # Set up Jinja environment
+          jinja_env = Environment(loader=FileSystemLoader('.'))
+          
+          # Process all SQL files
+          sql_files = glob.glob('**/*.sql', recursive=True)
+          processed_count = 0
+          
+          for sql_file in sql_files:
+              try:
+                  template = jinja_env.get_template(sql_file)
+                  rendered = template.render(**env_vars)
+                  
+                  # Create output directory structure
+                  output_file = f"processed-sql/{sql_file}"
+                  os.makedirs(os.path.dirname(output_file), exist_ok=True)
+                  
+                  # Write processed file
+                  with open(output_file, 'w') as f:
+                      f.write(rendered)
+                  
+                  print(f"✅ Processed: {sql_file}")
+                  processed_count += 1
+              except Exception as e:
+                  print(f"⚠️ Warning processing {sql_file}: {e}")
+                  # Copy original file if template processing fails
+                  os.makedirs(os.path.dirname(f"processed-sql/{sql_file}"), exist_ok=True)
+                  with open(sql_file, 'r') as src, open(f"processed-sql/{sql_file}", 'w') as dst:
+                      dst.write(src.read())
+          
+          print(f"🎉 Processed {processed_count} SQL files")
+          EOF
+          
+          # Run template processor
+          python3 process_templates.py
+          
+          echo "✅ All SQL templates processed"
           
       - name: 🗄️ Deploy Foundation Scripts
         run: |
-          echo "🗄️ Deploying foundation scripts with environment variables..."
+          echo "🗄️ Deploying foundation scripts..."
           
-          # Parse environment variables into -D parameters
-          ENV_VARS='${{ needs.setup.outputs.environment_vars }}'
-          DEFINE_PARAMS=""
-          
-          # Convert JSON to -D parameters
-          for key in $(echo "$ENV_VARS" | jq -r 'keys[]'); do
-            value=$(echo "$ENV_VARS" | jq -r ".$key")
-            DEFINE_PARAMS="$DEFINE_PARAMS -D \"$key='$value'\""
-          done
-          
-          echo "📋 Using define parameters: $DEFINE_PARAMS"
-          
-          # Deploy foundation scripts
-          eval "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/Account/snowflake/schemas/00_database_and_warehouse.sql' $DEFINE_PARAMS" --connection default
-          
-          echo "✅ Foundation scripts deployed"
+          # Deploy foundation scripts using processed SQL files
+          if [ -f "processed-sql/Account/snowflake/schemas/00_database_and_warehouse.sql" ]; then
+            echo "📊 Executing: processed-sql/Account/snowflake/schemas/00_database_and_warehouse.sql"
+            snow sql -f processed-sql/Account/snowflake/schemas/00_database_and_warehouse.sql --connection default
+            echo "✅ Foundation scripts deployed"
+          else
+            echo "⚠️ Foundation script not found"
+          fi
           
       - name: 📊 Deploy Schema Scripts
         run: |
           echo "📊 Deploying schema scripts in dependency order..."
           
-          # Parse environment variables into -D parameters
-          ENV_VARS='${{ needs.setup.outputs.environment_vars }}'
-          DEFINE_PARAMS=""
-          
-          for key in $(echo "$ENV_VARS" | jq -r 'keys[]'); do
-            value=$(echo "$ENV_VARS" | jq -r ".$key")
-            DEFINE_PARAMS="$DEFINE_PARAMS -D \"$key='$value'\""
+          # Deploy in dependency order using processed SQL files
+          echo "  📊 Deploying monitoring schema..."
+          for file in processed-sql/Customer/snowflake/monitoring/*.sql; do
+            if [ -f "$file" ]; then
+              echo "    📊 Executing: $file"
+              snow sql -f "$file" --connection default
+            fi
           done
           
-          # Deploy in dependency order
-          echo "  📊 Deploying monitoring schema..."
-          eval "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/Customer/snowflake/monitoring/*' $DEFINE_PARAMS" --connection default
-          
-          echo "  📊 Deploying raw_data schema..."
-          eval "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/Account/snowflake/schemas/raw_data/*' $DEFINE_PARAMS" --connection default
+          echo "  📊 Deploying raw_data schema..."  
+          for file in processed-sql/Account/snowflake/schemas/raw_data/*.sql; do
+            if [ -f "$file" ]; then
+              echo "    📊 Executing: $file"
+              snow sql -f "$file" --connection default
+            fi
+          done
           
           echo "  📊 Deploying processed_data schema..."
-          eval "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/Account/snowflake/schemas/processed_data/*' $DEFINE_PARAMS" --connection default
+          for file in processed-sql/Account/snowflake/schemas/processed_data/*.sql; do
+            if [ -f "$file" ]; then
+              echo "    📊 Executing: $file"
+              snow sql -f "$file" --connection default
+            fi
+          done
           
           echo "  📊 Deploying reporting schema..."
-          eval "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/shared/snowflake/reporting/*' $DEFINE_PARAMS" --connection default
+          for file in processed-sql/shared/snowflake/reporting/*.sql; do
+            if [ -f "$file" ]; then
+              echo "    📊 Executing: $file"
+              snow sql -f "$file" --connection default
+            fi
+          done
           
           echo "✅ All schema scripts deployed"
           
@@ -248,38 +301,28 @@ jobs:
         run: |
           echo "🔐 Deploying permissions..."
           
-          # Parse environment variables into -D parameters
-          ENV_VARS='${{ needs.setup.outputs.environment_vars }}'
-          DEFINE_PARAMS=""
-          
-          for key in $(echo "$ENV_VARS" | jq -r 'keys[]'); do
-            value=$(echo "$ENV_VARS" | jq -r ".$key")
-            DEFINE_PARAMS="$DEFINE_PARAMS -D \"$key='$value'\""
-          done
-          
-          # Deploy permissions
-          eval "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/Account/snowflake/schemas/permissions.sql' $DEFINE_PARAMS" --connection default
-          
-          echo "✅ Permissions deployed"
+          # Deploy permissions using processed SQL files
+          if [ -f "processed-sql/Account/snowflake/schemas/permissions.sql" ]; then
+            echo "📊 Executing: processed-sql/Account/snowflake/schemas/permissions.sql"
+            snow sql -f processed-sql/Account/snowflake/schemas/permissions.sql --connection default
+            echo "✅ Permissions deployed"
+          else
+            echo "⚠️ Permissions file not found"
+          fi
           
       - name: 📊 Load Sample Data (Optional)
         if: needs.setup.outputs.load_sample_data == 'true'
         run: |
           echo "📊 Loading sample data..."
           
-          # Parse environment variables into -D parameters
-          ENV_VARS='${{ needs.setup.outputs.environment_vars }}'
-          DEFINE_PARAMS=""
-          
-          for key in $(echo "$ENV_VARS" | jq -r 'keys[]'); do
-            value=$(echo "$ENV_VARS" | jq -r ".$key")
-            DEFINE_PARAMS="$DEFINE_PARAMS -D \"$key='$value'\""
-          done
-          
-          # Load sample data
-          eval "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/Account/snowflake/02_sample_data.sql' $DEFINE_PARAMS" --connection default
-          
-          echo "✅ Sample data loaded"
+          # Load sample data using processed SQL files
+          if [ -f "processed-sql/Account/snowflake/02_sample_data.sql" ]; then
+            echo "📊 Executing: processed-sql/Account/snowflake/02_sample_data.sql"
+            snow sql -f processed-sql/Account/snowflake/02_sample_data.sql --connection default
+            echo "✅ Sample data loaded"
+          else
+            echo "⚠️ Sample data file not found"
+          fi
 
   # Job 4: Dry Run Report
   dry_run:
