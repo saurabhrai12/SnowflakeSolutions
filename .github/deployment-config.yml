@@ -1,42 +1,165 @@
 # Snowflake Deployment Configuration
-# This file defines the schema deployment order and dependencies for the new project structure
+# This file defines environment mappings, deployment order, and execution patterns
 
-deployment:
-  # Foundation files (always deployed first)
-  foundation:
-    - "Account/snowflake/schemas/00_database_and_warehouse.sql"
-  
-  # Schema deployment order (maintains dependencies)
-  schemas:
-    - name: "monitoring"
-      description: "System monitoring and job tracking tables"
-      dependencies: []
-      paths:
-        - "Customer/snowflake/monitoring/"
-      
-    - name: "raw_data"
-      description: "Raw data tables, streams, and tasks"
-      dependencies: ["monitoring"]
-      paths:
-        - "Account/snowflake/schemas/raw_data/"
-      
-    - name: "processed_data"
-      description: "Transformed analytics tables and procedures" 
-      dependencies: ["monitoring", "raw_data"]
-      paths:
-        - "Account/snowflake/schemas/processed_data/"
-      
-    - name: "reporting"
-      description: "Views and reporting objects"
-      dependencies: ["monitoring", "raw_data", "processed_data"]
-      paths:
-        - "shared/snowflake/reporting/"
-  
-  # Permissions (always deployed last)
-  permissions:
-    - "Account/snowflake/schemas/permissions.sql"
+# Environment-specific Jinja template variables
+environments:
+  DEV:
+    variables:
+      environment: "dev"
+      database: "analytics_platform_dev"
+      warehouse: "analytics_wh_dev"
+      warehouse_size: "SMALL"
+      retention_days: 7
+      auto_suspend_minutes: 5
+  STAGING:
+    variables:
+      environment: "staging"
+      database: "analytics_platform_staging"
+      warehouse: "analytics_wh_staging"
+      warehouse_size: "MEDIUM"
+      retention_days: 30
+      auto_suspend_minutes: 30
+  PROD:
+    variables:
+      environment: "prod"
+      database: "analytics_platform"
+      warehouse: "analytics_wh"
+      warehouse_size: "LARGE"
+      retention_days: 90
+      auto_suspend_minutes: 60
 
-# File naming patterns to include/exclude
+# Domain-based deployment order
+# Domains are executed in this sequence
+domains:
+  - name: "foundation"
+    description: "Core database and warehouse setup"
+    files:
+      - "Account/snowflake/schemas/00_database_and_warehouse.sql"
+    
+  - name: "account"
+    description: "Account-level schemas and objects"
+    schemas:
+      - name: "monitoring"
+        description: "System monitoring and deployment tracking"
+        path: "Customer/snowflake/monitoring"
+        
+      - name: "raw_data"
+        description: "Raw data ingestion layer"
+        path: "Account/snowflake/schemas/raw_data"
+        
+      - name: "processed_data"
+        description: "Transformed analytics tables"
+        path: "Account/snowflake/schemas/processed_data"
+    
+  - name: "shared"
+    description: "Shared reporting views and functions"
+    schemas:
+      - name: "reporting"
+        description: "Reporting views and dashboards"
+        path: "shared/snowflake/reporting"
+
+  - name: "permissions"
+    description: "Security and access control"
+    files:
+      - "Account/snowflake/schemas/permissions.sql"
+
+# Object type deployment order within each schema
+# Objects are created in this sequence to respect dependencies
+object_types:
+  - name: "tables"
+    pattern: "tables.sql"
+    description: "Base tables and data structures"
+    priority: 1
+    
+  - name: "file_formats"
+    pattern: "file_formats.sql"
+    description: "File format definitions for data loading"
+    priority: 2
+    
+  - name: "stages"
+    pattern: "stages.sql"
+    description: "External and internal stages"
+    priority: 3
+    
+  - name: "sequences"
+    pattern: "sequences.sql"
+    description: "Auto-incrementing sequences"
+    priority: 4
+    
+  - name: "functions"
+    pattern: "functions.sql"
+    description: "User-defined functions"
+    priority: 5
+    
+  - name: "stored_procedures"
+    pattern: "stored_procedures.sql"
+    description: "Stored procedures and business logic"
+    priority: 6
+    
+  - name: "views"
+    pattern: "views.sql"
+    description: "Views and virtual tables"
+    priority: 7
+    
+  - name: "streams"
+    pattern: "*stream*.sql"
+    description: "Change data capture streams"
+    priority: 8
+    
+  - name: "tasks"
+    pattern: "*task*.sql"
+    description: "Scheduled tasks and automation"
+    priority: 9
+    
+  - name: "pipes"
+    pattern: "*pipe*.sql"
+    description: "Snowpipes for continuous data loading"
+    priority: 10
+    
+  - name: "clustering"
+    pattern: "clustering*.sql"
+    description: "Clustering optimization"
+    priority: 11
+    
+  - name: "comments"
+    pattern: "comments.sql"
+    description: "Object documentation and comments"
+    priority: 12
+    
+  - name: "data_pipeline"
+    pattern: "data_pipeline*.sql"
+    description: "Data pipeline specific objects"
+    priority: 13
+
+# Special post-deployment files
+post_deployment:
+  - name: "sample_data"
+    file: "Account/snowflake/02_sample_data.sql"
+    description: "Sample data loading"
+    condition: "load_sample_data"
+
+# Database name replacement patterns
+replacements:
+  - pattern: "USE DATABASE analytics_platform;"
+    replacement: "USE DATABASE {{ENVIRONMENT.database}};"
+  - pattern: "CREATE OR ALTER DATABASE analytics_platform;"
+    replacement: "CREATE OR ALTER DATABASE {{ENVIRONMENT.database}};"
+
+# Deployment modes
+modes:
+  FULL:
+    description: "Deploy all domains and schemas"
+    deploy_all: true
+    
+  INCREMENTAL:
+    description: "Deploy only changed files"
+    use_git_diff: true
+    
+  SCHEMA_SPECIFIC:
+    description: "Deploy specific schemas only"
+    use_target_schemas: true
+
+# File patterns to include/exclude
 file_patterns:
   include:
     - "*.sql"
@@ -45,12 +168,7 @@ file_patterns:
     - "*_temp.sql"
     - "*.bak"
 
-# Deployment modes
-modes:
-  incremental:
-    description: "Deploy only changed files"
-    include_dependencies: true
-  full:
-    description: "Deploy all schemas and files"
-  schema_specific:
-    description: "Deploy specific schemas only"
+# Monitoring configuration
+monitoring:
+  deployment_table: "monitoring.github_deployments"
+  track_execution_time: true

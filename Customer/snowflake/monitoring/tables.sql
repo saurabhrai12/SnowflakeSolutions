@@ -1,7 +1,8 @@
 -- Monitoring Schema Tables
 -- Uses CREATE OR ALTER for idempotent deployments
--- Note: Database context is set by the deployment pipeline
+-- Uses Jinja templating for environment-specific configuration
 
+USE DATABASE {{ database }};
 USE SCHEMA monitoring;
 
 -- Create or alter API calls tracking table
@@ -19,7 +20,7 @@ CREATE OR ALTER TABLE api_calls (
     retry_count NUMBER DEFAULT 0,
     error_message STRING,
     execution_time_ms NUMBER
-);
+) data_retention_time_in_days = {{ retention_days | default(7) }};
 
 -- Create or alter task errors table
 CREATE OR ALTER TABLE task_errors (

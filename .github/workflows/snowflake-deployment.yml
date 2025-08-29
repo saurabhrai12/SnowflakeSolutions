@@ -326,180 +326,30 @@ jobs:
             echo "  (No SQL files changed)"
           fi
           
-      - name: 🗄️ Deploy SQL Schemas with Snowflake CLI
+      - name: 🔧 Install yq for YAML parsing
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          
+      - name: 🗄️ Deploy SQL Schemas with Configuration
         if: needs.setup.outputs.dry_run == 'false'
         run: |
-          echo "🚀 Deploying to ${{ needs.setup.outputs.target_environment }} using Snowflake CLI..."
+          echo "🚀 Deploying to ${{ needs.setup.outputs.target_environment }} using configuration-driven approach..."
           mkdir -p deployment-logs
           
-          # Set database and warehouse context
-          snow sql -q "USE DATABASE ${{ needs.setup.outputs.snowflake_database }}" --connection default
-          snow sql -q "USE WAREHOUSE ${{ needs.setup.outputs.snowflake_warehouse }}" --connection default
+          # Set environment variables for deployment script
+          export ENVIRONMENT="${{ needs.setup.outputs.target_environment }}"
+          export DEPLOYMENT_MODE="${{ needs.setup.outputs.deployment_mode }}"
+          export TARGET_SCHEMAS="${{ needs.setup.outputs.target_schemas }}"
+          export LOAD_SAMPLE_DATA="${{ needs.setup.outputs.load_sample_data }}"
           
-          # Deploy foundation files first
-          echo "🏗️ Deploying foundation schema..."
-          if [ -f "Account/snowflake/schemas/00_database_and_warehouse.sql" ]; then
-            echo "  Executing: Account/snowflake/schemas/00_database_and_warehouse.sql"
-            snow sql -f Account/snowflake/schemas/00_database_and_warehouse.sql --connection default
-          fi
+          # Make deployment script executable
+          chmod +x .github/scripts/deploy.sh
           
-          # Ensure we're using the correct database context after foundation deployment
-          echo "🔧 Setting database context to: ${{ needs.setup.outputs.snowflake_database }}"
-          snow sql -q "USE DATABASE ${{ needs.setup.outputs.snowflake_database }}" --connection default
+          # Run configuration-driven deployment
+          .github/scripts/deploy.sh "$ENVIRONMENT" "$DEPLOYMENT_MODE" "$TARGET_SCHEMAS"
           
-          # Deploy monitoring schema first to create deployment tracking
-          echo "📊 Deploying monitoring schema..."
-          MONITORING_FILES_DEPLOYED=0
-          for file in Customer/snowflake/monitoring/*.sql; do
-            if [ -f "$file" ]; then
-              echo "  📊 Executing: $file"
-              snow sql -f "$file" --connection default
-              MONITORING_FILES_DEPLOYED=$((MONITORING_FILES_DEPLOYED + 1))
-            fi
-          done
-          
-          # Deployment logic based on changed files and deployment mode
-          DEPLOYMENT_MODE="${{ needs.setup.outputs.deployment_mode }}"
-          TARGET_SCHEMAS="${{ needs.setup.outputs.target_schemas }}"
-          CHANGED_FILES="${{ steps.changes.outputs.changed_files }}"
-          
-          echo "📋 Deployment Mode: $DEPLOYMENT_MODE"
-          echo "📋 Target Schemas: $TARGET_SCHEMAS"
-          echo "📋 Changed Files: $CHANGED_FILES"
-          
-          # Create deployment tracking table (now monitoring schema should exist)
-          echo "📊 Creating deployment tracking table..."
-          snow sql -q "CREATE OR REPLACE TABLE monitoring.github_deployments (
-            run_id VARCHAR(50),
-            deployment_time TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-            environment VARCHAR(50),
-            git_sha VARCHAR(50),
-            deployment_mode VARCHAR(50),
-            actor VARCHAR(100),
-            files_deployed NUMBER,
-            status VARCHAR(20)
-          )" --connection default
-          
-          # Define schema deployment order
-          SCHEMAS_ORDER=("monitoring" "raw_data" "processed_data" "reporting")
-          
-          # Deploy schemas based on mode
-          FILES_DEPLOYED=$MONITORING_FILES_DEPLOYED
-          
-          if [ "$DEPLOYMENT_MODE" = "FULL" ] || [ -z "$TARGET_SCHEMAS" ]; then
-            echo "💯 Full deployment - deploying remaining schemas"
-            echo "  (monitoring schema already deployed)"
-            
-            # Deploy raw_data schema
-            for file in Account/snowflake/schemas/raw_data/*.sql; do
-              if [ -f "$file" ]; then
-                echo "  📊 Executing: $file"
-                snow sql -f "$file" --connection default
-                FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
-              fi
-            done
-            
-            # Deploy processed_data schema
-            for file in Account/snowflake/schemas/processed_data/*.sql; do
-              if [ -f "$file" ]; then
-                echo "  📊 Executing: $file"
-                snow sql -f "$file" --connection default
-                FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
-              fi
-            done
-            
-            # Deploy reporting schema
-            for file in shared/snowflake/reporting/*.sql; do
-              if [ -f "$file" ]; then
-                echo "  📊 Executing: $file"
-                snow sql -f "$file" --connection default
-                FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
-              fi
-            done
-            
-          elif [ "$DEPLOYMENT_MODE" = "INCREMENTAL" ]; then
-            echo "🔄 Incremental deployment - processing changed files"
-            
-            # Process each changed file
-            echo "$CHANGED_FILES" | while IFS= read -r file; do
-              if [ -n "$file" ] && [ -f "$file" ]; then
-                echo "  📊 Executing changed file: $file"
-                snow sql -f "$file" --connection default
-                FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
-              fi
-            done
-            
-          else
-            echo "🎯 Schema-specific deployment"
-            
-            # Deploy specific schemas
-            IFS=',' read -ra SCHEMA_ARRAY <<< "$TARGET_SCHEMAS"
-            for schema in "${SCHEMA_ARRAY[@]}"; do
-              schema=$(echo "$schema" | xargs)  # trim whitespace
-              echo "  📊 Deploying schema: $schema"
-              
-              case "$schema" in
-                "monitoring")
-                  for file in Customer/snowflake/monitoring/*.sql; do
-                    if [ -f "$file" ]; then
-                      echo "    📊 Executing: $file"
-                      snow sql -f "$file" --connection default
-                      FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
-                    fi
-                  done
-                  ;;
-                "raw_data")
-                  for file in Account/snowflake/schemas/raw_data/*.sql; do
-                    if [ -f "$file" ]; then
-                      echo "    📊 Executing: $file"
-                      snow sql -f "$file" --connection default
-                      FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
-                    fi
-                  done
-                  ;;
-                "processed_data")
-                  for file in Account/snowflake/schemas/processed_data/*.sql; do
-                    if [ -f "$file" ]; then
-                      echo "    📊 Executing: $file"
-                      snow sql -f "$file" --connection default
-                      FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
-                    fi
-                  done
-                  ;;
-                "reporting")
-                  for file in shared/snowflake/reporting/*.sql; do
-                    if [ -f "$file" ]; then
-                      echo "    📊 Executing: $file"
-                      snow sql -f "$file" --connection default
-                      FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
-                    fi
-                  done
-                  ;;
-              esac
-            done
-          fi
-          
-          # Deploy permissions (always last)
-          if [ -f "Account/snowflake/schemas/permissions.sql" ]; then
-            echo "🔐 Deploying permissions..."
-            snow sql -f Account/snowflake/schemas/permissions.sql --connection default
-            FILES_DEPLOYED=$((FILES_DEPLOYED + 1))
-          fi
-          
-          # Record deployment
-          snow sql -q "INSERT INTO monitoring.github_deployments VALUES (
-            '${{ github.run_id }}',
-            CURRENT_TIMESTAMP(),
-            '${{ needs.setup.outputs.target_environment }}',
-            '${{ github.sha }}',
-            '$DEPLOYMENT_MODE',
-            '${{ github.actor }}',
-            $FILES_DEPLOYED,
-            'SUCCESS'
-          )" --connection default
-          
-          echo "🎉 Deployment completed successfully! Files deployed: $FILES_DEPLOYED"
-          echo "Files deployed: $FILES_DEPLOYED" > deployment-logs/deployment.log
+          echo "🎉 Configuration-driven deployment completed successfully!"
           
       - name: 🔍 Dry Run Report
         if: needs.setup.outputs.dry_run == 'true'
@@ -621,18 +471,11 @@ jobs:
           EOF
           chmod 0600 ~/.snowflake/config.toml
           
-      - name: 📊 Load Sample Data with Snowflake CLI
+      - name: 📊 Load Sample Data (Configuration-Driven)
         run: |
-          echo "📊 Loading sample data to ${{ needs.setup.outputs.target_environment }} using Snowflake CLI..."
-          
-          # Load sample data using Snowflake CLI
-          if [ -f "Account/snowflake/02_sample_data.sql" ]; then
-            echo "📊 Executing sample data file: Account/snowflake/02_sample_data.sql"
-            snow sql -f Account/snowflake/02_sample_data.sql --connection default
-            echo "🎉 Sample data loaded successfully!"
-          else
-            echo "⚠️ Sample data file not found: Account/snowflake/02_sample_data.sql"
-          fi
+          echo "📊 Sample data loading is now handled by the configuration-driven deployment script"
+          echo "ℹ️  Sample data was loaded during the main deployment if load_sample_data=true"
+          echo "🎉 Sample data loading completed (or skipped based on configuration)!"
 
   # Job 6: Notification
   notify:
