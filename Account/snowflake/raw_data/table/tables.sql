@@ -77,7 +77,8 @@ CREATE OR ALTER TABLE products (
     dimensions VARIANT COMMENT 'Product dimensions (length, width, height)',
     color_options ARRAY COMMENT 'Available color variations',
     tags ARRAY COMMENT 'Product tags for search and categorization',
-    launch_date DATE COMMENT 'Product launch date'
+    launch_date DATE COMMENT 'Product launch date',
+    discontinued_date DATE COMMENT 'Date when product was discontinued'
 );
 
 -- Create or alter orders table
