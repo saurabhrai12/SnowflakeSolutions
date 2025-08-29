@@ -1,10 +1,10 @@
-name: 🗄️ Snowflake Git Integration Deployment
+name: 🗄️ Advanced Snowflake Domain-Based Deployment
 
-# Simplified deployment using Snowflake Git integration with Jinja templating
-# This approach leverages native Snowflake capabilities for environment-specific deployments
+# Advanced deployment using domain-based architecture with dependency management
+# Supports multiple deployment modes: single_domain, full_deployment, changed_only
 
 on:
-  # Manual trigger with environment selection
+  # Manual trigger with advanced deployment options
   workflow_dispatch:
     inputs:
       target_environment:
@@ -16,6 +16,25 @@ on:
           - DEV
           - STAGING
           - PROD
+      deployment_mode:
+        description: 'Deployment Mode'
+        required: true
+        default: 'full_deployment'
+        type: choice
+        options:
+          - single_domain
+          - full_deployment
+          - changed_only
+      target_domain:
+        description: 'Target Domain (for single_domain mode)'
+        required: false
+        default: 'shared'
+        type: choice
+        options:
+          - shared
+          - account
+          - asset
+          - customer
       load_sample_data:
         description: 'Load Sample Data'
         required: false
@@ -30,22 +49,23 @@ on:
   # Automatic triggers: feature branches → DEV, main → STAGING
   push:
     branches: [ main, 'feature/**', 'feat/**', 'dev/**' ]
-    paths: [ 'Account/snowflake/**', 'Customer/snowflake/**', 'shared/snowflake/**' ]
+    paths: [ 'Account/snowflake/**', 'Customer/snowflake/**', 'Asset/snowflake/**', 'shared/snowflake/**' ]
 
   pull_request:
     branches: [ main ]
-    paths: [ 'Account/snowflake/**', 'Customer/snowflake/**', 'shared/snowflake/**' ]
-
-# Note: Snowflake environment variables will be set per job based on target environment
+    paths: [ 'Account/snowflake/**', 'Customer/snowflake/**', 'Asset/snowflake/**', 'shared/snowflake/**' ]
 
 jobs:
   # Job 1: Setup and determine deployment parameters
   setup:
-    name: 🔧 Setup Deployment Parameters
+    name: 🔧 Setup Advanced Deployment Parameters
     runs-on: ubuntu-latest
     outputs:
       target_environment: ${{ steps.setup.outputs.target_environment }}
       environment_vars: ${{ steps.setup.outputs.environment_vars }}
+      deployment_mode: ${{ steps.setup.outputs.deployment_mode }}
+      target_domain: ${{ steps.setup.outputs.target_domain }}
+      domains_to_deploy: ${{ steps.setup.outputs.domains_to_deploy }}
       dry_run: ${{ steps.setup.outputs.dry_run }}
       load_sample_data: ${{ steps.setup.outputs.load_sample_data }}
       git_repo_name: ${{ steps.setup.outputs.git_repo_name }}
@@ -53,11 +73,14 @@ jobs:
     steps:
       - name: 📥 Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Needed for git diff in changed_only mode
         
-      - name: 🔧 Install yq for YAML parsing
+      - name: 🔧 Install yq and dependencies
         run: |
           sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
+          python3 -m pip install PyYAML
         
       - name: 🎯 Determine Deployment Parameters
         id: setup
@@ -65,6 +88,8 @@ jobs:
           # Determine target environment based on trigger
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TARGET_ENV="${{ github.event.inputs.target_environment }}"
+            DEPLOYMENT_MODE="${{ github.event.inputs.deployment_mode }}"
+            TARGET_DOMAIN="${{ github.event.inputs.target_domain }}"
             DRY_RUN="${{ github.event.inputs.dry_run }}"
             LOAD_SAMPLE_DATA="${{ github.event.inputs.load_sample_data }}"
           elif [ "${{ github.event_name }}" = "push" ]; then
@@ -74,10 +99,14 @@ jobs:
             else
               TARGET_ENV="DEV"
             fi
+            DEPLOYMENT_MODE="changed_only"
+            TARGET_DOMAIN=""
             DRY_RUN="false"
             LOAD_SAMPLE_DATA="false"
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
             TARGET_ENV="DEV"
+            DEPLOYMENT_MODE="changed_only"
+            TARGET_DOMAIN=""
             DRY_RUN="true"
             LOAD_SAMPLE_DATA="false"
           fi
@@ -85,16 +114,148 @@ jobs:
           # Get environment variables from configuration
           ENVIRONMENT_VARS=$(yq eval ".environments.$TARGET_ENV.variables" .github/deployment-config.yml -o=json -I=0)
           
-          # Generate Git repository name (for Snowflake Git integration)
+          # Generate Git repository name
           GIT_REPO_NAME="analytics_platform_git_repo"
+          
+          # Create Python script to resolve domain dependencies and determine deployment order
+          cat > resolve_deployment.py << 'EOF'
+          import yaml
+          import json
+          import os
+          import subprocess
+          from typing import List, Dict, Set
+          
+          def load_config():
+              with open('.github/deployment-config.yml', 'r') as f:
+                  return yaml.safe_load(f)
+          
+          def get_changed_files():
+              """Get list of changed files using git diff"""
+              try:
+                  if os.environ.get('GITHUB_EVENT_NAME') == 'pull_request':
+                      # For PR, compare against base branch
+                      cmd = ['git', 'diff', '--name-only', 'origin/${{ github.base_ref }}...HEAD']
+                  else:
+                      # For push, compare against previous commit
+                      cmd = ['git', 'diff', '--name-only', 'HEAD~1..HEAD']
+                  
+                  result = subprocess.run(cmd, capture_output=True, text=True)
+                  return result.stdout.strip().split('\n') if result.stdout.strip() else []
+              except:
+                  return []
+          
+          def resolve_domain_dependencies(config: Dict, target_domains: Set[str]) -> List[str]:
+              """Resolve domain dependencies and return deployment order"""
+              domains = config['domains']
+              domain_map = {d['name']: d for d in domains}
+              
+              # Build dependency graph
+              resolved = []
+              visited = set()
+              temp_visited = set()
+              
+              def visit(domain_name: str):
+                  if domain_name in temp_visited:
+                      raise ValueError(f"Circular dependency detected involving {domain_name}")
+                  if domain_name in visited:
+                      return
+                  
+                  temp_visited.add(domain_name)
+                  
+                  domain = domain_map.get(domain_name)
+                  if domain:
+                      # Visit dependencies first
+                      for dep in domain.get('depends_on', []):
+                          if dep in target_domains:
+                              visit(dep)
+                      
+                      # Add required dependencies even if not in target
+                      for dep in domain.get('depends_on', []):
+                          if dep not in target_domains:
+                              target_domains.add(dep)
+                              visit(dep)
+                  
+                  temp_visited.remove(domain_name)
+                  visited.add(domain_name)
+                  if domain_name not in resolved:
+                      resolved.append(domain_name)
+              
+              # Process domains that should deploy first
+              for domain in domains:
+                  if domain.get('deploy_first') and domain['name'] in target_domains:
+                      visit(domain['name'])
+              
+              # Process remaining target domains
+              for domain_name in list(target_domains):
+                  visit(domain_name)
+              
+              return resolved
+          
+          def determine_domains_to_deploy():
+              config = load_config()
+              deployment_mode = os.environ.get('DEPLOYMENT_MODE', 'full_deployment')
+              target_domain = os.environ.get('TARGET_DOMAIN', '')
+              
+              if deployment_mode == 'single_domain':
+                  if not target_domain:
+                      raise ValueError("target_domain required for single_domain mode")
+                  target_domains = {target_domain}
+                  
+              elif deployment_mode == 'full_deployment':
+                  target_domains = {d['name'] for d in config['domains']}
+                  
+              elif deployment_mode == 'changed_only':
+                  changed_files = get_changed_files()
+                  target_domains = set()
+                  
+                  # Map changed files to domains
+                  for file_path in changed_files:
+                      if file_path.endswith('.sql'):
+                          for domain in config['domains']:
+                              if file_path.startswith(domain['path']):
+                                  target_domains.add(domain['name'])
+                                  break
+                  
+                  # If no domains detected, deploy shared at minimum
+                  if not target_domains:
+                      target_domains = {'shared'}
+              
+              else:
+                  raise ValueError(f"Unknown deployment mode: {deployment_mode}")
+              
+              # Resolve dependencies and get deployment order
+              deployment_order = resolve_domain_dependencies(config, target_domains)
+              return deployment_order
+          
+          # Main execution
+          try:
+              domains_to_deploy = determine_domains_to_deploy()
+              print(f"Domains to deploy: {domains_to_deploy}")
+              print(json.dumps(domains_to_deploy))
+          except Exception as e:
+              print(f"Error: {e}")
+              # Fallback to shared domain only
+              print('["shared"]')
+          EOF
+          
+          # Set environment variables for Python script
+          export DEPLOYMENT_MODE="$DEPLOYMENT_MODE"
+          export TARGET_DOMAIN="$TARGET_DOMAIN"
+          export GITHUB_EVENT_NAME="${{ github.event_name }}"
+          
+          # Run domain resolution
+          DOMAINS_TO_DEPLOY=$(python3 resolve_deployment.py | tail -1)
           
           # Output parameters
           echo "target_environment=$TARGET_ENV" >> $GITHUB_OUTPUT
+          echo "deployment_mode=$DEPLOYMENT_MODE" >> $GITHUB_OUTPUT
+          echo "target_domain=$TARGET_DOMAIN" >> $GITHUB_OUTPUT
+          echo "domains_to_deploy=$DOMAINS_TO_DEPLOY" >> $GITHUB_OUTPUT
           echo "dry_run=$DRY_RUN" >> $GITHUB_OUTPUT
           echo "load_sample_data=$LOAD_SAMPLE_DATA" >> $GITHUB_OUTPUT
           echo "git_repo_name=$GIT_REPO_NAME" >> $GITHUB_OUTPUT
           
-          # Output environment variables using delimiter to handle multiline JSON
+          # Output environment variables using delimiter
           {
             echo 'environment_vars<<EOF'
             echo "$ENVIRONMENT_VARS"
@@ -102,20 +263,24 @@ jobs:
           } >> $GITHUB_OUTPUT
           
           # Display deployment plan
-          echo "## 🗄️ Deployment Plan" >> $GITHUB_STEP_SUMMARY
+          echo "## 🗄️ Advanced Deployment Plan" >> $GITHUB_STEP_SUMMARY
           echo "**Environment:** $TARGET_ENV" >> $GITHUB_STEP_SUMMARY
+          echo "**Deployment Mode:** $DEPLOYMENT_MODE" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$TARGET_DOMAIN" ]; then
+            echo "**Target Domain:** $TARGET_DOMAIN" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "**Domains to Deploy:** $DOMAINS_TO_DEPLOY" >> $GITHUB_STEP_SUMMARY
           echo "**Dry Run:** $DRY_RUN" >> $GITHUB_STEP_SUMMARY
           echo "**Load Sample Data:** $LOAD_SAMPLE_DATA" >> $GITHUB_STEP_SUMMARY
-          echo "**Git Repository:** $GIT_REPO_NAME" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Environment Variables:" >> $GITHUB_STEP_SUMMARY
           echo '```json' >> $GITHUB_STEP_SUMMARY
           echo "$ENVIRONMENT_VARS" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-  # Job 2: Validation
+  # Job 2: Enhanced Validation
   validate:
-    name: 🔍 Validate SQL and Configuration
+    name: 🔍 Validate Configuration and Dependencies
     runs-on: ubuntu-latest
     needs: [setup]
     
@@ -123,62 +288,117 @@ jobs:
       - name: 📥 Checkout Code
         uses: actions/checkout@v4
         
+      - name: 🔧 Install dependencies
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          python3 -m pip install PyYAML jinja2
+        
+      - name: 🔍 Validate Deployment Configuration
+        run: |
+          echo "🔍 Validating deployment configuration..."
+          
+          # Validate configuration file structure
+          python3 -c "
+          import yaml
+          with open('.github/deployment-config.yml', 'r') as f:
+              config = yaml.safe_load(f)
+          
+          required_keys = ['environments', 'domains', 'component_order', 'deployment_modes']
+          for key in required_keys:
+              assert key in config, f'Missing required key: {key}'
+          print('✅ Configuration structure valid')
+          "
+        
+      - name: 🔍 Validate Domain Dependencies
+        run: |
+          echo "🔍 Validating domain dependencies..."
+          
+          python3 -c "
+          import yaml
+          with open('.github/deployment-config.yml', 'r') as f:
+              config = yaml.safe_load(f)
+          
+          domains = {d['name'] for d in config['domains']}
+          
+          for domain in config['domains']:
+              for dep in domain.get('depends_on', []):
+                  assert dep in domains, f'Domain {domain[\"name\"]} depends on unknown domain: {dep}'
+          
+          print('✅ Domain dependencies valid')
+          "
+        
       - name: 🔍 Validate Jinja Templates
         run: |
           echo "🔍 Validating Jinja templates in SQL files..."
           
-          # Check for basic Jinja syntax issues
-          INVALID_FILES=()
+          python3 -c "
+          import glob
+          from jinja2 import Environment, FileSystemLoader, meta, TemplateSyntaxError
           
-          # Find all SQL files with Jinja templates
-          while IFS= read -r -d '' file; do
-            if grep -q "{{.*}}" "$file"; then
-              echo "  📋 Template file: $file"
-              
-              # Check for common Jinja syntax issues
-              if grep -q "{{ *[^}]*[^}] *}}" "$file"; then
-                echo "    ✅ Basic Jinja syntax looks correct"
-              else
-                echo "    ❌ Potential Jinja syntax issue"
-                INVALID_FILES+=("$file")
-              fi
-            fi
-          done < <(find . -name "*.sql" -print0)
+          jinja_env = Environment(loader=FileSystemLoader('.'))
+          invalid_files = []
           
-          # Report validation results
-          if [ ${#INVALID_FILES[@]} -eq 0 ]; then
-            echo "✅ All Jinja templates passed validation"
-          else
-            echo "❌ Found issues in ${#INVALID_FILES[@]} files:"
-            for file in "${INVALID_FILES[@]}"; do
-              echo "  - $file"
-            done
-            exit 1
-          fi
+          sql_files = glob.glob('**/*.sql', recursive=True)
+          template_count = 0
+          
+          for sql_file in sql_files:
+              try:
+                  with open(sql_file, 'r') as f:
+                      content = f.read()
+                  
+                  if '{{' in content or '{%' in content:
+                      template_count += 1
+                      template = jinja_env.from_string(content)
+                      # Parse to check syntax
+                      meta.find_undeclared_variables(jinja_env.parse(content))
+                      print(f'  ✅ {sql_file}')
+              except TemplateSyntaxError as e:
+                  print(f'  ❌ {sql_file}: {e}')
+                  invalid_files.append(sql_file)
+              except Exception as e:
+                  print(f'  ⚠️ {sql_file}: {e}')
+          
+          print(f'Validated {template_count} Jinja templates')
+          
+          if invalid_files:
+              print(f'❌ Found syntax errors in {len(invalid_files)} files')
+              exit(1)
+          else:
+              print('✅ All Jinja templates valid')
+          "
 
-  # Job 3: Deploy using Snowflake Git Integration
+  # Job 3: Advanced Domain-Based Deployment
   deploy:
-    name: 🚀 Deploy with Snowflake Git Integration
+    name: 🚀 Deploy Domains with Dependencies
     runs-on: ubuntu-latest
     needs: [setup, validate]
     if: needs.setup.outputs.dry_run == 'false'
     
-    # Note: Environment-specific secrets are set in individual steps due to GitHub Actions limitations
+    strategy:
+      matrix:
+        domain: ${{ fromJson(needs.setup.outputs.domains_to_deploy) }}
+      fail-fast: false
     
     steps:
       - name: 📥 Checkout Code
         uses: actions/checkout@v4
         
-      - name: 🔧 Install Snowflake CLI
+      - name: 🔧 Install Snowflake CLI and dependencies
         uses: Snowflake-Labs/snowflake-cli-action@v1.5
         with:
           cli-version: "latest"
           default-config-file-path: ".snowflake/config.toml"
           
+      - name: 🔧 Install Python dependencies
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          python3 -m pip install PyYAML jinja2
+          
       - name: 📝 Create Snowflake Configuration (DEV)
         if: needs.setup.outputs.target_environment == 'DEV'
         run: |
-          echo "📝 Creating Snowflake CLI configuration for DEV..."
           mkdir -p ~/.snowflake
           cat > ~/.snowflake/config.toml << EOF
           [connections.default]
@@ -191,7 +411,6 @@ jobs:
       - name: 📝 Create Snowflake Configuration (STAGING)
         if: needs.setup.outputs.target_environment == 'STAGING'
         run: |
-          echo "📝 Creating Snowflake CLI configuration for STAGING..."
           mkdir -p ~/.snowflake
           cat > ~/.snowflake/config.toml << EOF
           [connections.default]
@@ -204,7 +423,6 @@ jobs:
       - name: 📝 Create Snowflake Configuration (PROD)
         if: needs.setup.outputs.target_environment == 'PROD'
         run: |
-          echo "📝 Creating Snowflake CLI configuration for PROD..."
           mkdir -p ~/.snowflake
           cat > ~/.snowflake/config.toml << EOF
           [connections.default]
@@ -216,64 +434,76 @@ jobs:
           
       - name: 🔌 Test Snowflake Connection
         run: |
-          echo "🔌 Testing Snowflake connection..."
-          echo "🔍 Debug connection configuration..."
-          echo "Environment: ${{ needs.setup.outputs.target_environment }}"
-          
-          # Check if config file exists and has correct permissions
-          if [ -f ~/.snowflake/config.toml ]; then
-            echo "✅ Config file exists"
-            ls -la ~/.snowflake/config.toml
-            echo "📋 Config file contents (secrets masked):"
-            sed 's/password = ".*"/password = "***MASKED***"/' ~/.snowflake/config.toml
-          else
-            echo "❌ Config file missing"
-            exit 1
-          fi
-          
-          # Test connection
+          echo "🔌 Testing Snowflake connection for domain: ${{ matrix.domain }}"
           snow connection test --connection default || {
             echo "❌ Connection test failed"
-            echo "💡 Troubleshooting steps:"
-            echo "  1. Verify SNOWFLAKE_*_ACCOUNT, SNOWFLAKE_*_USER, SNOWFLAKE_*_PASSWORD secrets are set"
-            echo "  2. Check if account identifier format is correct (e.g., 'account-locator' or 'org-account')"
-            echo "  3. Verify user has appropriate permissions"
-            echo "  4. Check if IP allowlisting is required"
             exit 1
           }
           echo "✅ Snowflake CLI connection successful"
           
-      - name: 🔧 Install Template Processor
-        run: |
-          echo "🔧 Installing Python for template processing..."
-          python3 -m pip install jinja2
-          
-      - name: 📊 Process SQL Templates
+      - name: 📊 Process SQL Templates for Domain
         env:
           ENVIRONMENT_VARS: ${{ needs.setup.outputs.environment_vars }}
+          CURRENT_DOMAIN: ${{ matrix.domain }}
         run: |
-          echo "📊 Processing Jinja templates in SQL files..."
+          echo "📊 Processing Jinja templates for domain: $CURRENT_DOMAIN"
           mkdir -p processed-sql
           
-          # Create Python script to process Jinja templates
-          cat > process_templates.py << 'EOF'
+          # Create advanced template processor
+          cat > process_domain_templates.py << 'EOF'
           import json
           import os
           import glob
+          import yaml
           from jinja2 import Template, Environment, FileSystemLoader
+          from pathlib import Path
           
-          # Get environment variables
+          def load_config():
+              with open('.github/deployment-config.yml', 'r') as f:
+                  return yaml.safe_load(f)
+          
+          # Get environment variables and current domain
           env_vars = json.loads(os.environ['ENVIRONMENT_VARS'])
+          current_domain = os.environ['CURRENT_DOMAIN']
+          config = load_config()
+          
+          print(f"Processing templates for domain: {current_domain}")
           print(f"Using environment variables: {env_vars}")
+          
+          # Find domain configuration
+          domain_config = None
+          for domain in config['domains']:
+              if domain['name'] == current_domain:
+                  domain_config = domain
+                  break
+          
+          if not domain_config:
+              print(f"❌ Domain {current_domain} not found in configuration")
+              exit(1)
+          
+          domain_path = domain_config['path']
+          print(f"Domain path: {domain_path}")
           
           # Set up Jinja environment
           jinja_env = Environment(loader=FileSystemLoader('.'))
           
-          # Process all SQL files
-          sql_files = glob.glob('**/*.sql', recursive=True)
+          # Process SQL files for this domain only
+          pattern = f"{domain_path}/**/*.sql"
+          sql_files = glob.glob(pattern, recursive=True)
           processed_count = 0
           
           for sql_file in sql_files:
+              # Skip excluded patterns
+              skip_file = False
+              for exclude_pattern in config['file_patterns']['exclude_patterns']:
+                  if Path(sql_file).match(exclude_pattern.replace('**/', '')):
+                      skip_file = True
+                      break
+              
+              if skip_file:
+                  print(f"⏭️ Skipped (excluded): {sql_file}")
+                  continue
+              
               try:
                   template = jinja_env.get_template(sql_file)
                   rendered = template.render(**env_vars)
@@ -294,151 +524,179 @@ jobs:
                   os.makedirs(os.path.dirname(f"processed-sql/{sql_file}"), exist_ok=True)
                   with open(sql_file, 'r') as src, open(f"processed-sql/{sql_file}", 'w') as dst:
                       dst.write(src.read())
+                  processed_count += 1
           
-          print(f"🎉 Processed {processed_count} SQL files")
+          print(f"🎉 Processed {processed_count} SQL files for domain {current_domain}")
           EOF
           
           # Run template processor
-          python3 process_templates.py
+          python3 process_domain_templates.py
           
-          echo "✅ All SQL templates processed"
-          
-      - name: 🗄️ Deploy Foundation Scripts
+      - name: 🗄️ Deploy Foundation (Shared Domain Only)
+        if: matrix.domain == 'shared'
         run: |
           echo "🗄️ Deploying foundation scripts..."
           
-          # Deploy foundation scripts using processed SQL files
-          if [ -f "processed-sql/shared/snowflake/foundation/00_database_and_warehouse.sql" ]; then
-            echo "📊 Executing: processed-sql/shared/snowflake/foundation/00_database_and_warehouse.sql"
-            snow sql -f processed-sql/shared/snowflake/foundation/00_database_and_warehouse.sql --connection default
+          foundation_file="processed-sql/shared/snowflake/foundation/00_database_and_warehouse.sql"
+          if [ -f "$foundation_file" ]; then
+            echo "📊 Executing: $foundation_file"
+            snow sql -f "$foundation_file" --connection default
             echo "✅ Foundation scripts deployed"
           else
             echo "⚠️ Foundation script not found"
           fi
           
-      - name: 📊 Deploy Schema Scripts
+      - name: 📊 Deploy Domain Components
+        env:
+          CURRENT_DOMAIN: ${{ matrix.domain }}
         run: |
-          echo "📊 Deploying schema scripts in dependency order..."
+          echo "📊 Deploying components for domain: $CURRENT_DOMAIN"
           
-          # Deploy in dependency order using processed SQL files
-          echo "  📊 Deploying monitoring schema..."
-          # Deploy files in priority order based on deployment config
-          for object_type in $(yq eval '.object_types[] | [.priority, .name] | join(" ")' .github/deployment-config.yml | sort -n | cut -d' ' -f2-); do
-            pattern=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .pattern" .github/deployment-config.yml)
-            description=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .description" .github/deployment-config.yml)
-            
-            # Handle files in subdirectories
-            for file in processed-sql/Customer/snowflake/monitoring/**/$pattern processed-sql/Customer/snowflake/monitoring/$pattern; do
-              if [[ -f "$file" ]]; then
-                echo "    📊 Executing: $file ($description)"
-                snow sql -f "$file" --connection default
-              fi
-            done
-          done
+          # Create domain deployment script
+          cat > deploy_domain_components.py << 'EOF'
+          import yaml
+          import os
+          import glob
+          import subprocess
+          from pathlib import Path
           
-          echo "  📊 Deploying raw_data schema..."
-          # Deploy files in priority order based on deployment config
-          for object_type in $(yq eval '.object_types[] | [.priority, .name] | join(" ")' .github/deployment-config.yml | sort -n | cut -d' ' -f2-); do
-            pattern=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .pattern" .github/deployment-config.yml)
-            description=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .description" .github/deployment-config.yml)
-            
-            # Handle files in subdirectories
-            for file in processed-sql/Account/snowflake/raw_data/**/$pattern processed-sql/Account/snowflake/raw_data/$pattern; do
-              if [[ -f "$file" ]]; then
-                echo "    📊 Executing: $file ($description)"
-                snow sql -f "$file" --connection default
-              fi
-            done
-          done
+          def load_config():
+              with open('.github/deployment-config.yml', 'r') as f:
+                  return yaml.safe_load(f)
           
-          echo "  📊 Deploying processed_data schema..."
-          # Deploy files in priority order based on deployment config
-          for object_type in $(yq eval '.object_types[] | [.priority, .name] | join(" ")' .github/deployment-config.yml | sort -n | cut -d' ' -f2-); do
-            pattern=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .pattern" .github/deployment-config.yml)
-            description=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .description" .github/deployment-config.yml)
-            
-            # Handle files in subdirectories
-            for file in processed-sql/Account/snowflake/processed_data/**/$pattern processed-sql/Account/snowflake/processed_data/$pattern; do
-              if [[ -f "$file" ]]; then
-                echo "    📊 Executing: $file ($description)"
-                snow sql -f "$file" --connection default
-              fi
-            done
-          done
+          def execute_sql_file(file_path):
+              """Execute SQL file using Snowflake CLI"""
+              try:
+                  print(f"    📊 Executing: {file_path}")
+                  result = subprocess.run(['snow', 'sql', '-f', file_path, '--connection', 'default'], 
+                                        capture_output=True, text=True, check=True)
+                  if result.stdout:
+                      print(f"    📋 Output: {result.stdout}")
+                  return True
+              except subprocess.CalledProcessError as e:
+                  print(f"    ❌ Error executing {file_path}: {e}")
+                  if e.stdout:
+                      print(f"    📋 Stdout: {e.stdout}")
+                  if e.stderr:
+                      print(f"    📋 Stderr: {e.stderr}")
+                  return False
           
-          echo "  📊 Deploying reporting schema..."
-          # Deploy files in priority order based on deployment config
-          for object_type in $(yq eval '.object_types[] | [.priority, .name] | join(" ")' .github/deployment-config.yml | sort -n | cut -d' ' -f2-); do
-            pattern=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .pattern" .github/deployment-config.yml)
-            description=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .description" .github/deployment-config.yml)
-            
-            # Handle files in subdirectories
-            for file in processed-sql/shared/snowflake/reporting/**/$pattern processed-sql/shared/snowflake/reporting/$pattern; do
-              if [[ -f "$file" ]]; then
-                echo "    📊 Executing: $file ($description)"
-                snow sql -f "$file" --connection default
-              fi
-            done
-          done
+          config = load_config()
+          current_domain = os.environ['CURRENT_DOMAIN']
           
-          echo "✅ All schema scripts deployed"
+          # Find domain configuration
+          domain_config = None
+          for domain in config['domains']:
+              if domain['name'] == current_domain:
+                  domain_config = domain
+                  break
           
-      - name: 🔐 Deploy Permissions
+          if not domain_config:
+              print(f"❌ Domain {current_domain} not found in configuration")
+              exit(1)
+          
+          domain_path = domain_config['path']
+          success_count = 0
+          error_count = 0
+          
+          # Deploy each schema in the domain
+          for schema in domain_config.get('schemas', []):
+              schema_path = f"processed-sql/{domain_path}/{schema['path']}"
+              
+              if not os.path.exists(schema_path):
+                  print(f"⚠️ Schema path not found: {schema_path}")
+                  continue
+              
+              print(f"  📊 Deploying schema: {schema['name']} ({schema['description']})")
+              
+              # Deploy components in priority order
+              for component in sorted(config['component_order'], key=lambda x: x['priority']):
+                  component_dir = f"{schema_path}/{component['directory']}"
+                  
+                  if os.path.exists(component_dir):
+                      print(f"    🔧 Processing {component['name']} ({component['description']})")
+                      
+                      # Find and execute SQL files in component directory
+                      sql_files = glob.glob(f"{component_dir}/*.sql")
+                      
+                      for sql_file in sorted(sql_files):
+                          if execute_sql_file(sql_file):
+                              success_count += 1
+                          else:
+                              error_count += 1
+          
+          print(f"✅ Domain deployment completed: {success_count} successful, {error_count} errors")
+          
+          if error_count > 0:
+              exit(1)
+          EOF
+          
+          # Run domain deployment
+          python3 deploy_domain_components.py
+          
+      - name: 🔐 Deploy Permissions (Shared Domain Only)
+        if: matrix.domain == 'shared'
         run: |
           echo "🔐 Deploying permissions..."
           
-          # Deploy permissions using processed SQL files
-          if [ -f "processed-sql/shared/snowflake/schemas/permissions.sql" ]; then
-            echo "📊 Executing: processed-sql/shared/snowflake/schemas/permissions.sql"
-            snow sql -f processed-sql/shared/snowflake/schemas/permissions.sql --connection default
+          permissions_file="processed-sql/shared/snowflake/schemas/permissions.sql"
+          if [ -f "$permissions_file" ]; then
+            echo "📊 Executing: $permissions_file"
+            snow sql -f "$permissions_file" --connection default
             echo "✅ Permissions deployed"
           else
             echo "⚠️ Permissions file not found"
           fi
           
       - name: 📊 Load Sample Data (Optional)
-        if: needs.setup.outputs.load_sample_data == 'true'
+        if: matrix.domain == 'shared' && needs.setup.outputs.load_sample_data == 'true'
         run: |
           echo "📊 Loading sample data..."
           
-          # Load sample data using processed SQL files
-          if [ -f "processed-sql/shared/snowflake/02_sample_data.sql" ]; then
-            echo "📊 Executing: processed-sql/shared/snowflake/02_sample_data.sql"
-            snow sql -f processed-sql/shared/snowflake/02_sample_data.sql --connection default
+          sample_data_file="processed-sql/shared/snowflake/02_sample_data.sql"
+          if [ -f "$sample_data_file" ]; then
+            echo "📊 Executing: $sample_data_file"
+            snow sql -f "$sample_data_file" --connection default
             echo "✅ Sample data loaded"
           else
             echo "⚠️ Sample data file not found"
           fi
 
-  # Job 4: Dry Run Report
+  # Job 4: Enhanced Dry Run Report
   dry_run:
-    name: 🔍 Dry Run Report
+    name: 🔍 Advanced Dry Run Report
     runs-on: ubuntu-latest
     needs: [setup, validate]
     if: needs.setup.outputs.dry_run == 'true'
     
     steps:
-      - name: 🔍 Generate Dry Run Report
+      - name: 🔍 Generate Advanced Dry Run Report
         run: |
           echo "🔍 DRY RUN - No actual deployment performed"
           echo ""
-          echo "## 🗄️ Deployment Plan" >> $GITHUB_STEP_SUMMARY
+          echo "## 🗄️ Advanced Deployment Plan" >> $GITHUB_STEP_SUMMARY
           echo "**Environment:** ${{ needs.setup.outputs.target_environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Deployment Mode:** ${{ needs.setup.outputs.deployment_mode }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Domains to Deploy:** ${{ needs.setup.outputs.domains_to_deploy }}" >> $GITHUB_STEP_SUMMARY
           echo "**Git Repository:** ${{ needs.setup.outputs.git_repo_name }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Would execute these commands:" >> $GITHUB_STEP_SUMMARY
+          echo "### Domain Deployment Order:" >> $GITHUB_STEP_SUMMARY
           echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "# Foundation" >> $GITHUB_STEP_SUMMARY
-          echo "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/shared/snowflake/foundation/00_database_and_warehouse.sql' -D \"environment='${{ needs.setup.outputs.target_environment }}'" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "# Schemas" >> $GITHUB_STEP_SUMMARY
-          echo "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/Customer/snowflake/monitoring/*' -D \"environment='${{ needs.setup.outputs.target_environment }}'" >> $GITHUB_STEP_SUMMARY
-          echo "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/Account/snowflake/raw_data/*' -D \"environment='${{ needs.setup.outputs.target_environment }}'" >> $GITHUB_STEP_SUMMARY
-          echo "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/Account/snowflake/processed_data/*' -D \"environment='${{ needs.setup.outputs.target_environment }}'" >> $GITHUB_STEP_SUMMARY
-          echo "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/shared/snowflake/reporting/*' -D \"environment='${{ needs.setup.outputs.target_environment }}'" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "# Permissions" >> $GITHUB_STEP_SUMMARY
-          echo "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/shared/snowflake/schemas/permissions.sql' -D \"environment='${{ needs.setup.outputs.target_environment }}'" >> $GITHUB_STEP_SUMMARY
+          
+          # Parse domains and show deployment plan
+          domains='${{ needs.setup.outputs.domains_to_deploy }}'
+          echo "# Domains will be deployed in dependency order:" >> $GITHUB_STEP_SUMMARY
+          echo "$domains" | sed 's/\[//g' | sed 's/\]//g' | sed 's/"//g' | tr ',' '\n' | while read domain; do
+            domain=$(echo $domain | xargs)  # trim whitespace
+            if [ -n "$domain" ]; then
+              echo "echo 'Deploying domain: $domain'" >> $GITHUB_STEP_SUMMARY
+              echo "# - Foundation (if shared)" >> $GITHUB_STEP_SUMMARY
+              echo "# - Components in priority order: file_formats, ext_stage, table, stream, pipe, view, task, function, procedure, dml" >> $GITHUB_STEP_SUMMARY
+              echo "# - Schema-specific objects" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+          
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Environment Variables:" >> $GITHUB_STEP_SUMMARY
@@ -446,21 +704,30 @@ jobs:
           echo '${{ needs.setup.outputs.environment_vars }}' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-  # Job 5: Notification
+  # Job 5: Deployment Summary and Notification
   notify:
-    name: 📢 Deployment Notification
+    name: 📢 Deployment Summary
     runs-on: ubuntu-latest
     needs: [setup, deploy, dry_run]
     if: always()
     
     steps:
-      - name: 📢 Send Notification
+      - name: 📢 Generate Deployment Summary
         run: |
+          echo "## 🗄️ Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ needs.setup.outputs.target_environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Mode:** ${{ needs.setup.outputs.deployment_mode }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Domains:** ${{ needs.setup.outputs.domains_to_deploy }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
           if [ "${{ needs.deploy.result }}" = "success" ]; then
+            echo "🎉 **Status:** Deployment completed successfully!" >> $GITHUB_STEP_SUMMARY
             echo "🎉 Deployment to ${{ needs.setup.outputs.target_environment }} completed successfully!"
           elif [ "${{ needs.dry_run.result }}" = "success" ]; then
+            echo "🔍 **Status:** Dry run completed successfully!" >> $GITHUB_STEP_SUMMARY
             echo "🔍 Dry run for ${{ needs.setup.outputs.target_environment }} completed successfully!"
           else
+            echo "❌ **Status:** Deployment failed!" >> $GITHUB_STEP_SUMMARY
             echo "❌ Deployment failed. Check the logs for details."
             exit 1
           fi

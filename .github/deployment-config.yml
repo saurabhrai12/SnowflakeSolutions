@@ -1,5 +1,5 @@
-# Snowflake Deployment Configuration
-# This file defines environment mappings, deployment order, and execution patterns
+# Advanced Snowflake Deployment Configuration
+# This file defines domains, deployment order, dependencies, and execution patterns
 
 # Environment-specific Jinja template variables
 environments:
@@ -31,147 +31,188 @@ environments:
       auto_suspend_minutes: 1
       task_schedule: "100 minute"  # Most frequent in production
 
-# Domain-based deployment order
-# Domains are executed in this sequence
+# Domain definitions with paths and dependencies
 domains:
-  - name: "foundation"
-    description: "Core database and warehouse setup"
-    files:
-      - "Account/snowflake/schemas/00_database_and_warehouse.sql"
-    
+  - name: "shared"
+    description: "Shared foundation and utilities"
+    path: "shared/snowflake"
+    required_for: ["account", "asset", "customer"]
+    deploy_first: true
+    schemas:
+      - name: "foundation"
+        path: "foundation"
+        description: "Core database and warehouse setup"
+      - name: "reporting" 
+        path: "reporting"
+        description: "Shared reporting views and functions"
+      - name: "schemas"
+        path: "schemas"
+        description: "Shared schema definitions"
+        
   - name: "account"
-    description: "Account-level schemas and objects"
+    description: "Account-level data and processing"
+    path: "Account/snowflake"
+    depends_on: ["shared"]
+    schemas:
+      - name: "raw_data"
+        path: "raw_data"
+        description: "Raw data ingestion layer"
+      - name: "processed_data"
+        path: "processed_data"
+        description: "Transformed analytics tables"
+        
+  - name: "asset"
+    description: "Asset management and tracking"
+    path: "Asset/snowflake"
+    depends_on: ["shared"]
+    schemas:
+      - name: "asset_raw"
+        path: "raw_data"
+        description: "Raw asset data"
+      - name: "asset_processed"
+        path: "processed_data"
+        description: "Processed asset analytics"
+        
+  - name: "customer"
+    description: "Customer-specific objects and monitoring"
+    path: "Customer/snowflake"
+    depends_on: ["shared"]
     schemas:
       - name: "monitoring"
-        description: "System monitoring and deployment tracking"
-        path: "Customer/snowflake/monitoring"
-        
-      - name: "raw_data"
-        description: "Raw data ingestion layer"
-        path: "Account/snowflake/schemas/raw_data"
-        
-      - name: "processed_data"
-        description: "Transformed analytics tables"
-        path: "Account/snowflake/schemas/processed_data"
-    
-  - name: "shared"
-    description: "Shared reporting views and functions"
-    schemas:
-      - name: "reporting"
-        description: "Reporting views and dashboards"
-        path: "shared/snowflake/reporting"
+        path: "monitoring"
+        description: "System monitoring and health checks"
+      - name: "customer_analytics"
+        path: "analytics"
+        description: "Customer-specific analytics"
 
-  - name: "permissions"
-    description: "Security and access control"
-    files:
-      - "Account/snowflake/schemas/permissions.sql"
-
-# Object type deployment order within each schema
-# Objects are created in this sequence to respect dependencies
-object_types:
-  - name: "tables"
-    pattern: "tables.sql"
-    description: "Base tables and data structures"
+# Component deployment order within each schema
+# Components are created in this sequence to respect dependencies
+component_order:
+  - name: "file_formats"
+    directory: "file_format"
+    pattern: "*.sql"
+    description: "File format definitions for data loading"
     priority: 1
     
-  - name: "file_formats"
-    pattern: "file_formats.sql"
-    description: "File format definitions for data loading"
+  - name: "ext_stage"
+    directory: "ext_stage" 
+    pattern: "*.sql"
+    description: "External and internal stages"
     priority: 2
     
-  - name: "stages"
-    pattern: "stages.sql"
-    description: "External and internal stages"
+  - name: "table"
+    directory: "table"
+    pattern: "*.sql"
+    description: "Base tables and data structures"
     priority: 3
     
-  - name: "sequences"
-    pattern: "sequences.sql"
-    description: "Auto-incrementing sequences"
+  - name: "stream"
+    directory: "stream"
+    pattern: "*.sql"
+    description: "Change data capture streams"
     priority: 4
     
-  - name: "functions"
-    pattern: "functions.sql"
-    description: "User-defined functions"
+  - name: "pipe"
+    directory: "pipe"
+    pattern: "*.sql"
+    description: "Snowpipes for continuous data loading"
     priority: 5
     
-  - name: "stored_procedures"
-    pattern: "stored_procedures.sql"
-    description: "Stored procedures and business logic"
+  - name: "view"
+    directory: "view"
+    pattern: "*.sql"
+    description: "Views and virtual tables"
     priority: 6
     
-  - name: "views"
-    pattern: "views.sql"
-    description: "Views and virtual tables"
+  - name: "task"
+    directory: "task"
+    pattern: "*.sql"
+    description: "Scheduled tasks and automation"
     priority: 7
     
-  - name: "streams"
-    pattern: "*stream*.sql"
-    description: "Change data capture streams"
+  - name: "function"
+    directory: "function"
+    pattern: "*.sql"
+    description: "User-defined functions"
     priority: 8
     
-  - name: "tasks"
-    pattern: "*task*.sql"
-    description: "Scheduled tasks and automation"
+  - name: "procedure"
+    directory: "procedure"
+    pattern: "*.sql"
+    description: "Stored procedures and business logic"
     priority: 9
     
-  - name: "pipes"
-    pattern: "*pipe*.sql"
-    description: "Snowpipes for continuous data loading"
+  - name: "dml"
+    directory: "dml"
+    pattern: "*.sql"
+    description: "Data manipulation operations"
     priority: 10
-    
-  - name: "clustering"
-    pattern: "clustering*.sql"
-    description: "Clustering optimization"
-    priority: 11
-    
-  - name: "comments"
-    pattern: "comments.sql"
-    description: "Object documentation and comments"
-    priority: 12
-    
-  - name: "data_pipeline"
-    pattern: "data_pipeline*.sql"
-    description: "Data pipeline specific objects"
-    priority: 13
 
-# Special post-deployment files
-post_deployment:
-  - name: "sample_data"
-    file: "Account/snowflake/02_sample_data.sql"
-    description: "Sample data loading"
-    condition: "load_sample_data"
-
-# Database name replacement patterns
-replacements:
-  - pattern: "USE DATABASE analytics_platform;"
-    replacement: "USE DATABASE {{ENVIRONMENT.database}};"
-  - pattern: "CREATE OR ALTER DATABASE analytics_platform;"
-    replacement: "CREATE OR ALTER DATABASE {{ENVIRONMENT.database}};"
+# Component directories mapping
+component_directories:
+  file_formats: "file_format"
+  ext_stage: "ext_stage"
+  table: "table"
+  stream: "stream"
+  pipe: "pipe"
+  view: "view"
+  task: "task"
+  function: "function"
+  procedure: "procedure"
+  dml: "dml"
 
 # Deployment modes
-modes:
-  FULL:
-    description: "Deploy all domains and schemas"
-    deploy_all: true
+deployment_modes:
+  single_domain:
+    description: "Deploy only a specific domain"
+    requires_domain_selection: true
     
-  INCREMENTAL:
-    description: "Deploy only changed files"
+  full_deployment:
+    description: "Deploy all domains in dependency order"
+    deploy_all_domains: true
+    respect_dependencies: true
+    
+  changed_only:
+    description: "Deploy only changed components since last deployment"
     use_git_diff: true
-    
-  SCHEMA_SPECIFIC:
-    description: "Deploy specific schemas only"
-    use_target_schemas: true
+    detect_changes: true
+    respect_dependencies: true
 
-# File patterns to include/exclude
+# File patterns
 file_patterns:
-  include:
-    - "*.sql"
-  exclude:
-    - "*_backup.sql"
-    - "*_temp.sql"
-    - "*.bak"
+  sql: "*.sql"
+  exclude_patterns:
+    - "**/.*"
+    - "**/*.bak"
+    - "**/*.tmp"
+    - "**/*_backup.sql"
+    - "**/*_temp.sql"
+
+# Special deployment files
+special_files:
+  foundation:
+    file: "shared/snowflake/foundation/00_database_and_warehouse.sql"
+    deploy_first: true
+    description: "Core database and warehouse setup"
+    
+  permissions:
+    file: "shared/snowflake/schemas/permissions.sql"
+    deploy_last: true
+    description: "Security and access control"
+    
+  sample_data:
+    file: "shared/snowflake/02_sample_data.sql"
+    description: "Sample data loading"
+    condition: "load_sample_data"
 
 # Monitoring configuration
 monitoring:
   deployment_table: "monitoring.github_deployments"
   track_execution_time: true
+  log_component_status: true
+
+# Validation rules
+validation:
+  check_jinja_syntax: true
+  validate_sql_syntax: false  # Requires Snowflake connection
+  check_dependencies: true
