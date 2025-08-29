@@ -327,8 +327,9 @@ jobs:
             pattern=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .pattern" .github/deployment-config.yml)
             description=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .description" .github/deployment-config.yml)
             
-            for file in processed-sql/Customer/snowflake/monitoring/$pattern; do
-              if [[ -f "$file" && "$(basename "$file")" == $pattern ]]; then
+            # Handle files in subdirectories
+            for file in processed-sql/Customer/snowflake/monitoring/**/$pattern processed-sql/Customer/snowflake/monitoring/$pattern; do
+              if [[ -f "$file" ]]; then
                 echo "    📊 Executing: $file ($description)"
                 snow sql -f "$file" --connection default
               fi
@@ -341,8 +342,9 @@ jobs:
             pattern=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .pattern" .github/deployment-config.yml)
             description=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .description" .github/deployment-config.yml)
             
-            for file in processed-sql/Account/snowflake/raw_data/$pattern; do
-              if [[ -f "$file" && "$(basename "$file")" == $pattern ]]; then
+            # Handle files in subdirectories
+            for file in processed-sql/Account/snowflake/raw_data/**/$pattern processed-sql/Account/snowflake/raw_data/$pattern; do
+              if [[ -f "$file" ]]; then
                 echo "    📊 Executing: $file ($description)"
                 snow sql -f "$file" --connection default
               fi
@@ -355,8 +357,9 @@ jobs:
             pattern=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .pattern" .github/deployment-config.yml)
             description=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .description" .github/deployment-config.yml)
             
-            for file in processed-sql/Account/snowflake/processed_data/$pattern; do
-              if [[ -f "$file" && "$(basename "$file")" == $pattern ]]; then
+            # Handle files in subdirectories
+            for file in processed-sql/Account/snowflake/processed_data/**/$pattern processed-sql/Account/snowflake/processed_data/$pattern; do
+              if [[ -f "$file" ]]; then
                 echo "    📊 Executing: $file ($description)"
                 snow sql -f "$file" --connection default
               fi
@@ -369,8 +372,9 @@ jobs:
             pattern=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .pattern" .github/deployment-config.yml)
             description=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .description" .github/deployment-config.yml)
             
-            for file in processed-sql/shared/snowflake/reporting/$pattern; do
-              if [[ -f "$file" && "$(basename "$file")" == $pattern ]]; then
+            # Handle files in subdirectories
+            for file in processed-sql/shared/snowflake/reporting/**/$pattern processed-sql/shared/snowflake/reporting/$pattern; do
+              if [[ -f "$file" ]]; then
                 echo "    📊 Executing: $file ($description)"
                 snow sql -f "$file" --connection default
               fi
