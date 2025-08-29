@@ -163,11 +163,7 @@ jobs:
     needs: [setup, validate]
     if: needs.setup.outputs.dry_run == 'false'
     
-    env:
-      # Set environment-specific Snowflake credentials
-      SNOWFLAKE_CONNECTIONS_DEFAULT_ACCOUNT: ${{ secrets[format('SNOWFLAKE_{0}_ACCOUNT', needs.setup.outputs.target_environment)] }}
-      SNOWFLAKE_CONNECTIONS_DEFAULT_USER: ${{ secrets[format('SNOWFLAKE_{0}_USER', needs.setup.outputs.target_environment)] }}
-      SNOWFLAKE_CONNECTIONS_DEFAULT_PASSWORD: ${{ secrets[format('SNOWFLAKE_{0}_PASSWORD', needs.setup.outputs.target_environment)] }}
+    # Note: Environment-specific secrets are set in individual steps due to GitHub Actions limitations
     
     steps:
       - name: 📥 Checkout Code
@@ -179,10 +175,72 @@ jobs:
           cli-version: "latest"
           default-config-file-path: ".snowflake/config.toml"
           
+      - name: 📝 Create Snowflake Configuration (DEV)
+        if: needs.setup.outputs.target_environment == 'DEV'
+        run: |
+          echo "📝 Creating Snowflake CLI configuration for DEV..."
+          mkdir -p ~/.snowflake
+          cat > ~/.snowflake/config.toml << EOF
+          [connections.default]
+          account = "${{ secrets.SNOWFLAKE_DEV_ACCOUNT }}"
+          user = "${{ secrets.SNOWFLAKE_DEV_USER }}"
+          password = "${{ secrets.SNOWFLAKE_DEV_PASSWORD }}"
+          EOF
+          chmod 0600 ~/.snowflake/config.toml
+          
+      - name: 📝 Create Snowflake Configuration (STAGING)
+        if: needs.setup.outputs.target_environment == 'STAGING'
+        run: |
+          echo "📝 Creating Snowflake CLI configuration for STAGING..."
+          mkdir -p ~/.snowflake
+          cat > ~/.snowflake/config.toml << EOF
+          [connections.default]
+          account = "${{ secrets.SNOWFLAKE_STAGING_ACCOUNT }}"
+          user = "${{ secrets.SNOWFLAKE_STAGING_USER }}"
+          password = "${{ secrets.SNOWFLAKE_STAGING_PASSWORD }}"
+          EOF
+          chmod 0600 ~/.snowflake/config.toml
+          
+      - name: 📝 Create Snowflake Configuration (PROD)
+        if: needs.setup.outputs.target_environment == 'PROD'
+        run: |
+          echo "📝 Creating Snowflake CLI configuration for PROD..."
+          mkdir -p ~/.snowflake
+          cat > ~/.snowflake/config.toml << EOF
+          [connections.default]
+          account = "${{ secrets.SNOWFLAKE_PROD_ACCOUNT }}"
+          user = "${{ secrets.SNOWFLAKE_PROD_USER }}"
+          password = "${{ secrets.SNOWFLAKE_PROD_PASSWORD }}"
+          EOF
+          chmod 0600 ~/.snowflake/config.toml
+          
       - name: 🔌 Test Snowflake Connection
         run: |
           echo "🔌 Testing Snowflake connection..."
-          snow connection test --connection default
+          echo "🔍 Debug connection configuration..."
+          echo "Environment: ${{ needs.setup.outputs.target_environment }}"
+          
+          # Check if config file exists and has correct permissions
+          if [ -f ~/.snowflake/config.toml ]; then
+            echo "✅ Config file exists"
+            ls -la ~/.snowflake/config.toml
+            echo "📋 Config file contents (secrets masked):"
+            sed 's/password = ".*"/password = "***MASKED***"/' ~/.snowflake/config.toml
+          else
+            echo "❌ Config file missing"
+            exit 1
+          fi
+          
+          # Test connection
+          snow connection test --connection default || {
+            echo "❌ Connection test failed"
+            echo "💡 Troubleshooting steps:"
+            echo "  1. Verify SNOWFLAKE_*_ACCOUNT, SNOWFLAKE_*_USER, SNOWFLAKE_*_PASSWORD secrets are set"
+            echo "  2. Check if account identifier format is correct (e.g., 'account-locator' or 'org-account')"
+            echo "  3. Verify user has appropriate permissions"
+            echo "  4. Check if IP allowlisting is required"
+            exit 1
+          }
           echo "✅ Snowflake CLI connection successful"
           
       - name: 🔧 Install Template Processor
