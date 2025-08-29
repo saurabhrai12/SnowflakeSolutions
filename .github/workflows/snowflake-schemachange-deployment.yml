@@ -3,7 +3,7 @@ name: 🗄️ Snowflake SchemaChange Domain-Based Deployment
 # Advanced deployment using Snowflake SchemaChange with versioning and CREATE OR REPLACE
 # Supports domain-based architecture with dependency management and version control
 
-on:
+"on":
   # Manual trigger with advanced deployment options
   workflow_dispatch:
     inputs:
@@ -428,13 +428,14 @@ jobs:
               # Get relative path for better identification
               rel_path = os.path.relpath(file_path, '.')
               
-              header = f"""-- SchemaChange Version: {version}
--- Generated: {timestamp}
--- File: {rel_path}
--- Domain: {os.environ.get('CURRENT_DOMAIN', 'unknown')}
--- Environment: {json.loads(os.environ['ENVIRONMENT_VARS']).get('environment', 'unknown')}
-
-"""
+              domain = os.environ.get('CURRENT_DOMAIN', 'unknown')
+              env = json.loads(os.environ['ENVIRONMENT_VARS']).get('environment', 'unknown')
+              
+              header = f"-- SchemaChange Version: {version}\\n"
+              header += f"-- Generated: {timestamp}\\n"
+              header += f"-- File: {rel_path}\\n" 
+              header += f"-- Domain: {domain}\\n"
+              header += f"-- Environment: {env}\\n\\n"
               return header
           
           # Get environment variables and domain info
