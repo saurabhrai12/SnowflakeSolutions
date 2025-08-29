@@ -308,9 +308,9 @@ jobs:
           echo "🗄️ Deploying foundation scripts..."
           
           # Deploy foundation scripts using processed SQL files
-          if [ -f "processed-sql/Account/snowflake/schemas/00_database_and_warehouse.sql" ]; then
-            echo "📊 Executing: processed-sql/Account/snowflake/schemas/00_database_and_warehouse.sql"
-            snow sql -f processed-sql/Account/snowflake/schemas/00_database_and_warehouse.sql --connection default
+          if [ -f "processed-sql/shared/snowflake/foundation/00_database_and_warehouse.sql" ]; then
+            echo "📊 Executing: processed-sql/shared/snowflake/foundation/00_database_and_warehouse.sql"
+            snow sql -f processed-sql/shared/snowflake/foundation/00_database_and_warehouse.sql --connection default
             echo "✅ Foundation scripts deployed"
           else
             echo "⚠️ Foundation script not found"
@@ -341,7 +341,7 @@ jobs:
             pattern=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .pattern" .github/deployment-config.yml)
             description=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .description" .github/deployment-config.yml)
             
-            for file in processed-sql/Account/snowflake/schemas/raw_data/$pattern; do
+            for file in processed-sql/Account/snowflake/raw_data/$pattern; do
               if [[ -f "$file" && "$(basename "$file")" == $pattern ]]; then
                 echo "    📊 Executing: $file ($description)"
                 snow sql -f "$file" --connection default
@@ -355,7 +355,7 @@ jobs:
             pattern=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .pattern" .github/deployment-config.yml)
             description=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .description" .github/deployment-config.yml)
             
-            for file in processed-sql/Account/snowflake/schemas/processed_data/$pattern; do
+            for file in processed-sql/Account/snowflake/processed_data/$pattern; do
               if [[ -f "$file" && "$(basename "$file")" == $pattern ]]; then
                 echo "    📊 Executing: $file ($description)"
                 snow sql -f "$file" --connection default
@@ -384,9 +384,9 @@ jobs:
           echo "🔐 Deploying permissions..."
           
           # Deploy permissions using processed SQL files
-          if [ -f "processed-sql/Account/snowflake/schemas/permissions.sql" ]; then
-            echo "📊 Executing: processed-sql/Account/snowflake/schemas/permissions.sql"
-            snow sql -f processed-sql/Account/snowflake/schemas/permissions.sql --connection default
+          if [ -f "processed-sql/shared/snowflake/schemas/permissions.sql" ]; then
+            echo "📊 Executing: processed-sql/shared/snowflake/schemas/permissions.sql"
+            snow sql -f processed-sql/shared/snowflake/schemas/permissions.sql --connection default
             echo "✅ Permissions deployed"
           else
             echo "⚠️ Permissions file not found"
@@ -398,9 +398,9 @@ jobs:
           echo "📊 Loading sample data..."
           
           # Load sample data using processed SQL files
-          if [ -f "processed-sql/Account/snowflake/02_sample_data.sql" ]; then
-            echo "📊 Executing: processed-sql/Account/snowflake/02_sample_data.sql"
-            snow sql -f processed-sql/Account/snowflake/02_sample_data.sql --connection default
+          if [ -f "processed-sql/shared/snowflake/02_sample_data.sql" ]; then
+            echo "📊 Executing: processed-sql/shared/snowflake/02_sample_data.sql"
+            snow sql -f processed-sql/shared/snowflake/02_sample_data.sql --connection default
             echo "✅ Sample data loaded"
           else
             echo "⚠️ Sample data file not found"
@@ -425,16 +425,16 @@ jobs:
           echo "### Would execute these commands:" >> $GITHUB_STEP_SUMMARY
           echo '```bash' >> $GITHUB_STEP_SUMMARY
           echo "# Foundation" >> $GITHUB_STEP_SUMMARY
-          echo "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/Account/snowflake/schemas/00_database_and_warehouse.sql' -D \"environment='${{ needs.setup.outputs.target_environment }}'" >> $GITHUB_STEP_SUMMARY
+          echo "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/shared/snowflake/foundation/00_database_and_warehouse.sql' -D \"environment='${{ needs.setup.outputs.target_environment }}'" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "# Schemas" >> $GITHUB_STEP_SUMMARY
           echo "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/Customer/snowflake/monitoring/*' -D \"environment='${{ needs.setup.outputs.target_environment }}'" >> $GITHUB_STEP_SUMMARY
-          echo "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/Account/snowflake/schemas/raw_data/*' -D \"environment='${{ needs.setup.outputs.target_environment }}'" >> $GITHUB_STEP_SUMMARY
-          echo "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/Account/snowflake/schemas/processed_data/*' -D \"environment='${{ needs.setup.outputs.target_environment }}'" >> $GITHUB_STEP_SUMMARY
+          echo "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/Account/snowflake/raw_data/*' -D \"environment='${{ needs.setup.outputs.target_environment }}'" >> $GITHUB_STEP_SUMMARY
+          echo "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/Account/snowflake/processed_data/*' -D \"environment='${{ needs.setup.outputs.target_environment }}'" >> $GITHUB_STEP_SUMMARY
           echo "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/shared/snowflake/reporting/*' -D \"environment='${{ needs.setup.outputs.target_environment }}'" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "# Permissions" >> $GITHUB_STEP_SUMMARY
-          echo "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/Account/snowflake/schemas/permissions.sql' -D \"environment='${{ needs.setup.outputs.target_environment }}'" >> $GITHUB_STEP_SUMMARY
+          echo "snow git execute '@${{ needs.setup.outputs.git_repo_name }}/branches/${{ github.ref_name }}/shared/snowflake/schemas/permissions.sql' -D \"environment='${{ needs.setup.outputs.target_environment }}'" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Environment Variables:" >> $GITHUB_STEP_SUMMARY
