@@ -15,7 +15,7 @@ CREATE OR ALTER SCHEMA monitoring;
 -- Create or alter warehouse
 CREATE OR ALTER WAREHOUSE {{ warehouse }}
     WAREHOUSE_SIZE = '{{ warehouse_size | default("SMALL") }}'
-    AUTO_SUSPEND = {{ auto_suspend_minutes | default(60) }}
+    AUTO_SUSPEND = {{ auto_suspend_minutes | default(1) }}
     AUTO_RESUME = TRUE
     MIN_CLUSTER_COUNT = 1
     MAX_CLUSTER_COUNT = 1
