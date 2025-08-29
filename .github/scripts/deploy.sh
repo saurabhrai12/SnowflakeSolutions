@@ -124,7 +124,7 @@ deploy_schema_files() {
             fi
         done < <(find "$schema_path" -name "$pattern" -print0 2>/dev/null || true)
         
-    done < <(yq eval '.object_types[] | .name' "$CONFIG_FILE" | sort -n)
+    done < <(yq eval '.object_types[] | [.priority, .name] | join(" ")' "$CONFIG_FILE" | sort -n | cut -d' ' -f2-)
     
     log "✅ Schema $schema_name deployed: $files_deployed files"
     return 0
