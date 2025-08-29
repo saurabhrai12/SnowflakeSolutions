@@ -1,7 +1,7 @@
 -- Reporting Schema Views
 -- Uses CREATE OR ALTER for idempotent deployments
 
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA reporting;
 
 -- Customer 360 view with enriched data

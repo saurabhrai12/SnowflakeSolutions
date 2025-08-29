@@ -1,7 +1,8 @@
 -- Raw Data Schema Stored Procedures
 -- Uses CREATE OR ALTER for idempotent deployments
+-- Uses Jinja templating for environment-specific configuration
 
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA raw_data;
 
 -- Procedure to process new orders and update metrics

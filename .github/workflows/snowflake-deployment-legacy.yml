@@ -1,0 +1,511 @@
+name: 🗄️ Snowflake Branch-Based Deployment Pipeline
+# 
+# Branch-based deployment strategy:
+# - feature/*, feat/*, dev/* branches → DEV environment
+# - main branch → STAGING environment  
+# - Manual workflow_dispatch → Any environment (DEV/STAGING/PROD)
+# - Pull requests → DEV environment (dry run)
+
+on:
+  # Manual trigger with environment selection
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: 'Target Environment'
+        required: true
+        default: 'DEV'
+        type: choice
+        options:
+          - DEV
+          - STAGING
+          - PROD
+      deployment_mode:
+        description: 'Deployment Mode'
+        required: true
+        default: 'INCREMENTAL'
+        type: choice
+        options:
+          - INCREMENTAL
+          - FULL
+          - SCHEMA_SPECIFIC
+      target_schemas:
+        description: 'Target Schemas (comma-separated, leave empty for all)'
+        required: false
+        default: ''
+        type: string
+      dry_run:
+        description: 'Dry Run (no actual deployment)'
+        required: true
+        default: true
+        type: boolean
+      load_sample_data:
+        description: 'Load Sample Data (02_sample_data.sql)'
+        required: false
+        default: false
+        type: boolean
+      
+  # Automatic triggers: feature branches → DEV, main → STAGING
+  push:
+    branches: [ main, 'feature/**', 'feat/**', 'dev/**' ]
+    paths: [ 'Account/snowflake/**', 'Customer/snowflake/**', 'shared/snowflake/**' ]
+    
+  # Pull requests always deploy to DEV (dry run)
+  pull_request:
+    branches: [ main ]
+    paths: [ 'Account/snowflake/**', 'Customer/snowflake/**', 'shared/snowflake/**' ]
+
+env:
+  # Build information
+  BUILD_NUMBER: ${{ github.run_number }}
+  GIT_COMMIT_SHORT: ${{ github.sha }}
+  DEPLOYMENT_TIMESTAMP: ${{ github.run_id }}
+
+jobs:
+  # Job 1: Determine deployment parameters
+  setup:
+    name: 🏗️ Setup Deployment
+    runs-on: ubuntu-latest
+    outputs:
+      target_environment: ${{ steps.setup.outputs.target_environment }}
+      deployment_mode: ${{ steps.setup.outputs.deployment_mode }}
+      target_schemas: ${{ steps.setup.outputs.target_schemas }}
+      dry_run: ${{ steps.setup.outputs.dry_run }}
+      load_sample_data: ${{ steps.setup.outputs.load_sample_data }}
+      snowflake_database: ${{ steps.setup.outputs.snowflake_database }}
+      snowflake_warehouse: ${{ steps.setup.outputs.snowflake_warehouse }}
+      
+    steps:
+      - name: 📋 Setup Deployment Parameters
+        id: setup
+        run: |
+          # Determine target environment
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TARGET_ENV="${{ github.event.inputs.target_environment }}"
+            DEPLOYMENT_MODE="${{ github.event.inputs.deployment_mode }}"
+            TARGET_SCHEMAS="${{ github.event.inputs.target_schemas }}"
+            DRY_RUN="${{ github.event.inputs.dry_run }}"
+            LOAD_SAMPLE_DATA="${{ github.event.inputs.load_sample_data }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            # Branch-based environment selection
+            BRANCH_NAME="${{ github.ref_name }}"
+            if [ "$BRANCH_NAME" = "main" ]; then
+              TARGET_ENV="STAGING"
+              echo "🎯 Main branch detected - deploying to STAGING"
+            elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == feat/* ]] || [[ "$BRANCH_NAME" == dev/* ]]; then
+              TARGET_ENV="DEV"
+              echo "🎯 Feature branch ($BRANCH_NAME) detected - deploying to DEV"
+            else
+              TARGET_ENV="DEV"
+              echo "🎯 Unknown branch ($BRANCH_NAME) - defaulting to DEV"
+            fi
+            DEPLOYMENT_MODE="INCREMENTAL"
+            TARGET_SCHEMAS=""
+            DRY_RUN="false"
+            LOAD_SAMPLE_DATA="false"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            TARGET_ENV="DEV"
+            DEPLOYMENT_MODE="INCREMENTAL"
+            TARGET_SCHEMAS=""
+            DRY_RUN="true"
+            LOAD_SAMPLE_DATA="false"
+          fi
+          
+          # Set environment-specific database and warehouse
+          case $TARGET_ENV in
+            "DEV")
+              SNOWFLAKE_DATABASE="analytics_platform_dev"
+              SNOWFLAKE_WAREHOUSE="analytics_wh_dev"
+              ;;
+            "STAGING")
+              SNOWFLAKE_DATABASE="analytics_platform_staging"
+              SNOWFLAKE_WAREHOUSE="analytics_wh_staging"
+              ;;
+            "PROD")
+              SNOWFLAKE_DATABASE="analytics_platform"
+              SNOWFLAKE_WAREHOUSE="analytics_wh"
+              ;;
+          esac
+          
+          # Output parameters
+          echo "target_environment=$TARGET_ENV" >> $GITHUB_OUTPUT
+          echo "deployment_mode=$DEPLOYMENT_MODE" >> $GITHUB_OUTPUT
+          echo "target_schemas=$TARGET_SCHEMAS" >> $GITHUB_OUTPUT
+          echo "dry_run=$DRY_RUN" >> $GITHUB_OUTPUT
+          echo "load_sample_data=$LOAD_SAMPLE_DATA" >> $GITHUB_OUTPUT
+          echo "snowflake_database=$SNOWFLAKE_DATABASE" >> $GITHUB_OUTPUT
+          echo "snowflake_warehouse=$SNOWFLAKE_WAREHOUSE" >> $GITHUB_OUTPUT
+          
+          # Display deployment plan
+          echo "## 🗄️ Deployment Plan" >> $GITHUB_STEP_SUMMARY
+          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | $TARGET_ENV |" >> $GITHUB_STEP_SUMMARY
+          echo "| Database | $SNOWFLAKE_DATABASE |" >> $GITHUB_STEP_SUMMARY
+          echo "| Warehouse | $SNOWFLAKE_WAREHOUSE |" >> $GITHUB_STEP_SUMMARY
+          echo "| Mode | $DEPLOYMENT_MODE |" >> $GITHUB_STEP_SUMMARY
+          echo "| Schemas | $TARGET_SCHEMAS |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dry Run | $DRY_RUN |" >> $GITHUB_STEP_SUMMARY
+          echo "| Load Sample Data | $LOAD_SAMPLE_DATA |" >> $GITHUB_STEP_SUMMARY
+
+  # Job 2: SQL Validation
+  validate:
+    name: 🔍 SQL Validation
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+        
+      - name: 🔍 Validate SQL Schemas
+        run: |
+          echo "🔍 Validating SQL files for ${{ needs.setup.outputs.target_environment }}..."
+          
+          # Create validation report
+          mkdir -p reports
+          echo "# SQL Validation Report" > reports/sql-validation.md
+          echo "Environment: ${{ needs.setup.outputs.target_environment }}" >> reports/sql-validation.md
+          echo "" >> reports/sql-validation.md
+          
+          # Check for dangerous patterns in new structure
+          DANGEROUS_PATTERNS=0
+          if find Account/snowflake/ Customer/snowflake/ shared/snowflake/ -name "*.sql" -exec grep -l "DROP TABLE\|DROP DATABASE\|TRUNCATE" {} \; 2>/dev/null | wc -l | grep -v '^0$'; then
+            echo "⚠️ Found dangerous DROP/TRUNCATE statements" >> reports/sql-validation.md
+            DANGEROUS_PATTERNS=1
+          fi
+          
+          # Check for idempotent patterns
+          NON_IDEMPOTENT=0
+          if find Account/snowflake/ Customer/snowflake/ shared/snowflake/ -name "*.sql" -exec grep -L "CREATE OR REPLACE\|CREATE.*IF NOT EXISTS" {} \; 2>/dev/null | wc -l | grep -v '^0$'; then
+            echo "⚠️ Found non-idempotent CREATE statements" >> reports/sql-validation.md
+            NON_IDEMPOTENT=1
+          fi
+          
+          # Summary
+          if [ $DANGEROUS_PATTERNS -eq 0 ] && [ $NON_IDEMPOTENT -eq 0 ]; then
+            echo "✅ All SQL files passed validation" >> reports/sql-validation.md
+            echo "✅ SQL validation passed"
+          else
+            echo "⚠️ SQL validation completed with warnings" >> reports/sql-validation.md
+            echo "⚠️ SQL validation has warnings (non-blocking)"
+          fi
+          
+      - name: 📊 Upload Validation Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: sql-validation-report
+          path: reports/
+
+  # Job 3: Deployment approval for STAGING/PROD
+  approval:
+    name: 🔒 Deployment Approval
+    runs-on: ubuntu-latest
+    needs: [setup, validate]
+    if: contains(fromJSON('["STAGING", "PROD"]'), needs.setup.outputs.target_environment) && needs.setup.outputs.dry_run == 'false'
+    environment: 
+      name: ${{ needs.setup.outputs.target_environment }}
+      
+    steps:
+      - name: 📋 Approval Required
+        run: |
+          echo "🔒 Manual approval required for ${{ needs.setup.outputs.target_environment }} deployment"
+          echo "Database: ${{ needs.setup.outputs.snowflake_database }}"
+          echo "Warehouse: ${{ needs.setup.outputs.snowflake_warehouse }}"
+          echo "Mode: ${{ needs.setup.outputs.deployment_mode }}"
+
+  # Job 4: SQL Schema Deployment
+  deploy:
+    name: 🗄️ Deploy to ${{ needs.setup.outputs.target_environment }}
+    runs-on: ubuntu-latest
+    needs: [setup, validate, approval]
+    if: always() && needs.validate.result == 'success' && (needs.approval.result == 'success' || needs.approval.result == 'skipped')
+    
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for git diff
+        
+      - name: 🔧 Install Snowflake CLI
+        uses: snowflakedb/snowflake-cli-action@v1.5
+        with:
+          cli-version: "latest"
+          default-config-file-path: "snowflake-config.toml"
+          
+      - name: 📝 Create Snowflake Configuration
+        run: |
+          echo "📝 Creating Snowflake CLI configuration..."
+          mkdir -p ~/.snowflake
+          cat > ~/.snowflake/config.toml << EOF
+          [connections.default]
+          account = "${{ secrets[format('SNOWFLAKE_{0}_ACCOUNT', needs.setup.outputs.target_environment)] }}"
+          user = "${{ secrets[format('SNOWFLAKE_{0}_USER', needs.setup.outputs.target_environment)] }}"
+          password = "${{ secrets[format('SNOWFLAKE_{0}_PASSWORD', needs.setup.outputs.target_environment)] }}"
+          warehouse = "${{ needs.setup.outputs.snowflake_warehouse }}"
+          database = "${{ needs.setup.outputs.snowflake_database }}"
+          EOF
+          chmod 0600 ~/.snowflake/config.toml
+          
+      - name: 🔌 Test Snowflake Connection
+        run: |
+          echo "🔌 Testing Snowflake connection with CLI..."
+          echo "🔍 Debug connection configuration..."
+          echo "Environment: ${{ needs.setup.outputs.target_environment }}"
+          echo "Database: ${{ needs.setup.outputs.snowflake_database }}"
+          echo "Warehouse: ${{ needs.setup.outputs.snowflake_warehouse }}"
+          
+          # Check if config file exists and has correct permissions
+          if [ -f ~/.snowflake/config.toml ]; then
+            echo "✅ Config file exists"
+            ls -la ~/.snowflake/config.toml
+            echo "📋 Config file contents (secrets masked):"
+            sed 's/password = ".*"/password = "***MASKED***"/' ~/.snowflake/config.toml
+          else
+            echo "❌ Config file missing"
+            exit 1
+          fi
+          
+          # Test connection
+          snow connection test --connection default || {
+            echo "❌ Connection test failed"
+            echo "💡 Troubleshooting steps:"
+            echo "  1. Verify SNOWFLAKE_*_ACCOUNT, SNOWFLAKE_*_USER, SNOWFLAKE_*_PASSWORD secrets are set"
+            echo "  2. Check if account identifier format is correct (e.g., 'account-locator' or 'org-account')"
+            echo "  3. Verify user has appropriate permissions"
+            echo "  4. Check if IP allowlisting is required"
+            exit 1
+          }
+          echo "✅ Snowflake CLI connection successful"
+          
+      - name: 🔍 Detect Changed Files
+        id: changes
+        run: |
+          echo "🔍 Detecting changed SQL files..."
+          
+          # Determine base reference for git diff
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_REF="origin/${{ github.base_ref }}"
+            echo "📋 Pull request mode - comparing against: $BASE_REF"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # For manual triggers, compare against main branch if available, otherwise use HEAD~1
+            if git rev-parse --verify origin/main >/dev/null 2>&1; then
+              BASE_REF="origin/main"
+              echo "📋 Manual trigger - comparing against main branch: $BASE_REF"
+            else
+              BASE_REF="HEAD~1"
+              echo "📋 Manual trigger - comparing against previous commit: $BASE_REF"
+            fi
+          else
+            BASE_REF="HEAD~1"
+            echo "📋 Push trigger - comparing against previous commit: $BASE_REF"
+          fi
+          
+          echo "base_ref=$BASE_REF" >> $GITHUB_OUTPUT
+          
+          # Get changed SQL files with better error handling
+          echo "🔍 Running git diff: git diff --name-only $BASE_REF HEAD -- Account/snowflake/ Customer/snowflake/ shared/snowflake/"
+          
+          CHANGED_FILES=""
+          if git diff --name-only "$BASE_REF" HEAD -- Account/snowflake/ Customer/snowflake/ shared/snowflake/ >/dev/null 2>&1; then
+            CHANGED_FILES=$(git diff --name-only "$BASE_REF" HEAD -- Account/snowflake/ Customer/snowflake/ shared/snowflake/ | grep '\.sql$' || true)
+          else
+            echo "⚠️ Git diff failed, treating as full deployment"
+            # If git diff fails, find all SQL files for full deployment
+            CHANGED_FILES=$(find Account/snowflake/ Customer/snowflake/ shared/snowflake/ -name "*.sql" 2>/dev/null || true)
+          fi
+          
+          echo "changed_files<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGED_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "📝 Changed SQL files:"
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "$CHANGED_FILES" | while IFS= read -r file; do
+              [ -n "$file" ] && echo "  - $file"
+            done
+          else
+            echo "  (No SQL files changed)"
+          fi
+          
+      - name: 🔧 Install yq for YAML parsing
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          
+      - name: 🗄️ Deploy SQL Schemas with Configuration
+        if: needs.setup.outputs.dry_run == 'false'
+        run: |
+          echo "🚀 Deploying to ${{ needs.setup.outputs.target_environment }} using configuration-driven approach..."
+          mkdir -p deployment-logs
+          
+          # Set environment variables for deployment script
+          export ENVIRONMENT="${{ needs.setup.outputs.target_environment }}"
+          export DEPLOYMENT_MODE="${{ needs.setup.outputs.deployment_mode }}"
+          export TARGET_SCHEMAS="${{ needs.setup.outputs.target_schemas }}"
+          export LOAD_SAMPLE_DATA="${{ needs.setup.outputs.load_sample_data }}"
+          
+          # Make deployment script executable
+          chmod +x .github/scripts/deploy.sh
+          
+          # Run configuration-driven deployment
+          .github/scripts/deploy.sh "$ENVIRONMENT" "$DEPLOYMENT_MODE" "$TARGET_SCHEMAS"
+          
+          echo "🎉 Configuration-driven deployment completed successfully!"
+          
+      - name: 🔍 Dry Run Report
+        if: needs.setup.outputs.dry_run == 'true'
+        run: |
+          echo "🔍 DRY RUN - No actual deployment performed"
+          echo ""
+          echo "## 🗄️ Deployment Plan" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ needs.setup.outputs.target_environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Database:** ${{ needs.setup.outputs.snowflake_database }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Warehouse:** ${{ needs.setup.outputs.snowflake_warehouse }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Mode:** ${{ needs.setup.outputs.deployment_mode }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Would deploy SQL files:" >> $GITHUB_STEP_SUMMARY
+          echo "- Database: \`${{ needs.setup.outputs.snowflake_database }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Warehouse: \`${{ needs.setup.outputs.snowflake_warehouse }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Foundation: 00_database_and_warehouse.sql" >> $GITHUB_STEP_SUMMARY
+          echo "- Monitoring: tables.sql, stored_procedures.sql" >> $GITHUB_STEP_SUMMARY
+          echo "- Raw Data: tables.sql, procedures, streams, tasks" >> $GITHUB_STEP_SUMMARY
+          echo "- Processed Data: tables.sql, procedures" >> $GITHUB_STEP_SUMMARY
+          echo "- Reporting: views.sql" >> $GITHUB_STEP_SUMMARY
+          echo "- Permissions: permissions.sql" >> $GITHUB_STEP_SUMMARY
+          echo "- Total: 18 SQL files with tables, views, procedures, and tasks" >> $GITHUB_STEP_SUMMARY
+          
+      - name: 🔍 Post-Deployment Verification
+        if: needs.setup.outputs.dry_run == 'false'
+        run: |
+          echo "🔍 Verifying deployment..."
+          
+          # Verify connection and context
+          echo "📋 Checking database and warehouse..."
+          snow sql -q "SELECT CURRENT_DATABASE(), CURRENT_WAREHOUSE()" --connection default
+          
+          # Check schemas
+          echo "🗄️ Verifying schemas exist..."
+          snow sql -q "SHOW SCHEMAS" --connection default
+          # Check objects in each schema
+          echo "📊 Verifying deployed objects..."
+          
+          # Check monitoring schema objects
+          echo "  🔍 Checking monitoring schema..."
+          snow sql -q "SHOW TABLES IN SCHEMA monitoring" --connection default || echo "  ⚠️ monitoring schema not found or empty"
+          
+          # Check raw_data schema objects  
+          echo "  🔍 Checking raw_data schema..."
+          snow sql -q "SHOW TABLES IN SCHEMA raw_data" --connection default || echo "  ⚠️ raw_data schema not found or empty"
+          
+          # Check processed_data schema objects
+          echo "  🔍 Checking processed_data schema..."
+          snow sql -q "SHOW TABLES IN SCHEMA processed_data" --connection default || echo "  ⚠️ processed_data schema not found or empty"
+          
+          # Check reporting schema objects
+          echo "  🔍 Checking reporting schema..."
+          snow sql -q "SHOW VIEWS IN SCHEMA reporting" --connection default || echo "  ⚠️ reporting schema not found or empty"
+          
+          # Check deployment tracking
+          echo "📊 Checking deployment tracking..."
+          snow sql -q "SELECT COUNT(*) FROM monitoring.github_deployments WHERE run_id = '${{ github.run_id }}'" --connection default || echo "⚠️ Could not check deployment tracking"
+          
+          echo "✅ Verification completed!"
+          
+      - name: 📊 Upload Deployment Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-logs-${{ needs.setup.outputs.target_environment }}
+          path: deployment-logs/
+          
+      - name: 📈 Generate Deployment Summary
+        if: needs.setup.outputs.dry_run == 'false'
+        run: |
+          echo "## 🎉 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ needs.setup.outputs.target_environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Database | ${{ needs.setup.outputs.snowflake_database }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Warehouse | ${{ needs.setup.outputs.snowflake_warehouse }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Run ID | ${{ github.run_id }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Git SHA | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Actor | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **Deployment completed successfully!**" >> $GITHUB_STEP_SUMMARY
+
+  # Job 5: Load Sample Data (Optional)
+  load_sample_data:
+    name: 📊 Load Sample Data
+    runs-on: ubuntu-latest
+    needs: [setup, deploy]
+    if: always() && needs.setup.outputs.dry_run == 'false' && needs.setup.outputs.load_sample_data == 'true' && needs.deploy.result == 'success'
+    
+    steps:
+      - name: 🔍 Debug Sample Data Conditions
+        run: |
+          echo "🔍 Checking sample data loading conditions:"
+          echo "  - Dry run: '${{ needs.setup.outputs.dry_run }}' (should be 'false')"
+          echo "  - Load sample data: '${{ needs.setup.outputs.load_sample_data }}' (should be 'true')" 
+          echo "  - Deploy result: '${{ needs.deploy.result }}' (should be 'success')"
+          echo "  - Condition result: ${{ needs.setup.outputs.dry_run == 'false' && needs.setup.outputs.load_sample_data == 'true' && needs.deploy.result == 'success' }}"
+          
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+        
+      - name: 🔧 Install Snowflake CLI
+        uses: snowflakedb/snowflake-cli-action@v1.5
+        with:
+          cli-version: "latest"
+          default-config-file-path: "snowflake-config.toml"
+          
+      - name: 📝 Create Snowflake Configuration
+        run: |
+          echo "📝 Creating Snowflake CLI configuration..."
+          mkdir -p ~/.snowflake
+          cat > ~/.snowflake/config.toml << EOF
+          [connections.default]
+          account = "${{ secrets[format('SNOWFLAKE_{0}_ACCOUNT', needs.setup.outputs.target_environment)] }}"
+          user = "${{ secrets[format('SNOWFLAKE_{0}_USER', needs.setup.outputs.target_environment)] }}"
+          password = "${{ secrets[format('SNOWFLAKE_{0}_PASSWORD', needs.setup.outputs.target_environment)] }}"
+          warehouse = "${{ needs.setup.outputs.snowflake_warehouse }}"
+          database = "${{ needs.setup.outputs.snowflake_database }}"
+          EOF
+          chmod 0600 ~/.snowflake/config.toml
+          
+      - name: 📊 Load Sample Data (Configuration-Driven)
+        run: |
+          echo "📊 Sample data loading is now handled by the configuration-driven deployment script"
+          echo "ℹ️  Sample data was loaded during the main deployment if load_sample_data=true"
+          echo "🎉 Sample data loading completed (or skipped based on configuration)!"
+
+  # Job 6: Notification
+  notify:
+    name: 📢 Notification
+    runs-on: ubuntu-latest
+    needs: [setup, deploy, approval, load_sample_data]
+    if: always()
+    
+    steps:
+      - name: 📢 Deployment Notification
+        run: |
+          echo "🔍 Debug Information:"
+          echo "  - Deploy result: ${{ needs.deploy.result }}"
+          echo "  - Load sample data result: ${{ needs.load_sample_data.result }}"
+          echo "  - Dry run setting: ${{ needs.setup.outputs.dry_run }}"
+          echo "  - Load sample data setting: ${{ needs.setup.outputs.load_sample_data }}"
+          echo ""
+          
+          if [ "${{ needs.deploy.result }}" = "success" ]; then
+            echo "🎉 Deployment to ${{ needs.setup.outputs.target_environment }} completed successfully!"
+          elif [ "${{ needs.deploy.result }}" = "failure" ]; then
+            echo "❌ Deployment to ${{ needs.setup.outputs.target_environment }} failed!"
+          elif [ "${{ needs.deploy.result }}" = "skipped" ]; then
+            echo "⏭️ Deployment to ${{ needs.setup.outputs.target_environment }} was skipped (dry run or no approval)"
+          fi
+          
+          if [ "${{ needs.load_sample_data.result }}" = "success" ]; then
+            echo "📊 Sample data loaded successfully!"
+          elif [ "${{ needs.load_sample_data.result }}" = "skipped" ]; then
+            echo "⏭️ Sample data loading was skipped"
+          elif [ "${{ needs.load_sample_data.result }}" = "failure" ]; then
+            echo "❌ Sample data loading failed!"
+          fi

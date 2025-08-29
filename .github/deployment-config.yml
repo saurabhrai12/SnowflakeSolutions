@@ -9,24 +9,27 @@ environments:
       database: "analytics_platform_dev"
       warehouse: "analytics_wh_dev"
       warehouse_size: "SMALL"
-      retention_days: 7
-      auto_suspend_minutes: 5
+      retention_days: 1
+      auto_suspend_minutes: 1
+      task_schedule: "500 minute"  # Less frequent in dev
   STAGING:
     variables:
       environment: "staging"
       database: "analytics_platform_staging"
       warehouse: "analytics_wh_staging"
       warehouse_size: "MEDIUM"
-      retention_days: 30
-      auto_suspend_minutes: 30
+      retention_days: 1
+      auto_suspend_minutes: 1
+      task_schedule: "200 minute"  # Regular frequency in staging
   PROD:
     variables:
       environment: "prod"
       database: "analytics_platform"
       warehouse: "analytics_wh"
       warehouse_size: "LARGE"
-      retention_days: 90
-      auto_suspend_minutes: 60
+      retention_days: 1
+      auto_suspend_minutes: 1
+      task_schedule: "100 minute"  # Most frequent in production
 
 # Domain-based deployment order
 # Domains are executed in this sequence

@@ -32,7 +32,7 @@ CREATE OR ALTER TABLE task_errors (
     resolution_notes STRING,
     error_category STRING,
     severity STRING DEFAULT 'MEDIUM'
-);
+) data_retention_time_in_days = {{ retention_days | default(7) }};
 
 -- Create or alter system metrics table
 CREATE OR ALTER TABLE system_metrics (

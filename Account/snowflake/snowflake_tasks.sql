@@ -6,7 +6,7 @@
 
 -- Create a task to generate daily reports via ECS
 CREATE OR REPLACE TASK reporting.daily_reports_task
-    WAREHOUSE = analytics_wh
+    WAREHOUSE = {{ warehouse }}
     SCHEDULE = 'USING CRON 0 6 * * * UTC'  -- Run daily at 6 AM UTC
     COMMENT = 'Daily automated report generation via ECS service'
 AS
@@ -14,7 +14,7 @@ AS
 
 -- Create a task to generate weekly executive dashboard
 CREATE OR REPLACE TASK reporting.weekly_executive_dashboard_task
-    WAREHOUSE = analytics_wh
+    WAREHOUSE = {{ warehouse }}
     SCHEDULE = 'USING CRON 0 8 * * 1 UTC'  -- Run weekly on Monday at 8 AM UTC
     COMMENT = 'Weekly executive dashboard generation via ECS service'
 AS
@@ -33,7 +33,7 @@ AS
 
 -- Create a task to generate monthly data quality reports
 CREATE OR REPLACE TASK reporting.monthly_data_quality_task
-    WAREHOUSE = analytics_wh
+    WAREHOUSE = {{ warehouse }}
     SCHEDULE = 'USING CRON 0 7 1 * * UTC'  -- Run monthly on 1st day at 7 AM UTC
     COMMENT = 'Monthly data quality report generation via ECS service'
 AS
@@ -52,7 +52,7 @@ AS
 
 -- Create a task to monitor failed ECS jobs and retry them
 CREATE OR REPLACE TASK monitoring.ecs_job_retry_task
-    WAREHOUSE = analytics_wh
+    WAREHOUSE = {{ warehouse }}
     SCHEDULE = 'USING CRON */15 * * * * UTC'  -- Run every 15 minutes
     COMMENT = 'Monitor and retry failed ECS jobs'
 AS

@@ -1,7 +1,7 @@
 -- Data Pipeline Stored Procedures for Raw to Processed Data Movement
 -- Implements ELT patterns with proper error handling and logging
 
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA processed_data;
 
 -- Drop existing procedures if they exist

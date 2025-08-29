@@ -1,7 +1,7 @@
 -- Snowflake Tasks and Streams for Job Processing
 -- Uses CREATE OR ALTER for idempotent deployments
 
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA raw_data;
 
 -- Create or replace stream to capture job table changes
@@ -95,7 +95,7 @@ $$;
 
 -- Create task to process job stream and call external Python app
 CREATE OR ALTER TASK job_processor_task
-    WAREHOUSE = analytics_wh
+    WAREHOUSE = {{ warehouse }}
     SCHEDULE = '1 minute'  -- Check every minute for new jobs
     WHEN SYSTEM$STREAM_HAS_DATA('job_stream')
     AS
@@ -103,14 +103,14 @@ CREATE OR ALTER TASK job_processor_task
 
 -- Create task for job status monitoring and cleanup
 CREATE OR ALTER TASK job_cleanup_task
-    WAREHOUSE = analytics_wh
+    WAREHOUSE = {{ warehouse }}
     SCHEDULE = '10 minute'
     AS
     CALL cleanup_jobs_and_monitoring();
 
 -- Create task for daily metrics generation
 CREATE OR ALTER TASK daily_metrics_task
-    WAREHOUSE = analytics_wh
+    WAREHOUSE = {{ warehouse }}
     SCHEDULE = 'USING CRON 0 6 * * * UTC'  -- Run daily at 6 AM UTC
     AS
     CALL generate_daily_metrics_and_checks();

@@ -2,7 +2,7 @@
 -- This script tests the external functions and task integration with the ECS report service
 
 -- Set the context
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA reporting;
 USE WAREHOUSE analytics_wh;
 

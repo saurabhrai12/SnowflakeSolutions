@@ -1,7 +1,8 @@
 -- Raw Data Schema Tables
 -- Uses CREATE OR ALTER for idempotent deployments
+-- Uses Jinja templating for environment-specific configuration
 
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA raw_data;
 
 -- Create or alter job tracking table with modern features
@@ -22,7 +23,10 @@ CREATE OR ALTER TABLE jobs (
     max_retries NUMBER(2,0) DEFAULT 3,
     tags ARRAY,
     metadata VARIANT
-);
+) data_retention_time_in_days = {{ retention_days | default(30) }}
+  {% if environment == 'prod' %}
+  cluster by (created_at, status)
+  {% endif %};
 
 -- Create or alter customers table
 CREATE OR ALTER TABLE customers (

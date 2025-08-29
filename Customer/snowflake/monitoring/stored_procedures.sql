@@ -1,7 +1,7 @@
 -- Monitoring Schema Stored Procedures
 -- Uses CREATE OR ALTER for idempotent deployments
 
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA monitoring;
 
 -- Procedure for data quality checks

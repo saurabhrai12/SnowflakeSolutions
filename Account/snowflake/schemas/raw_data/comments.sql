@@ -1,7 +1,8 @@
 -- Raw Data Schema Table Comments
 -- Documentation for all tables
+-- Uses Jinja templating for environment-specific configuration
 
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA raw_data;
 
 -- Add table comments for documentation

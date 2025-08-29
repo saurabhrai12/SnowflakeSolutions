@@ -2,7 +2,7 @@
 -- Captures changes from raw_data tables to trigger processing
 -- Note: Streams use CREATE STREAM IF NOT EXISTS for idempotency
 
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA raw_data;
 
 -- Stream to capture customer changes

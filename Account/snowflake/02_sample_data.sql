@@ -1,7 +1,7 @@
 -- Sample Data (DML) for Analytics Platform
 -- Uses modern INSERT with MERGE for idempotent operations
 
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA raw_data;
 
 -- Insert sample customers using MERGE for idempotency
@@ -282,8 +282,8 @@ USING (
          '{"analyst": "analyst3", "department": "marketing"}'),
         ('JOB007', 'Backup Database', 'MAINTENANCE', 'COMPLETED', 'system',
          '2024-02-07 00:00:00'::TIMESTAMP_NTZ, '2024-02-07 01:45:00'::TIMESTAMP_NTZ,
-         '{"database": "analytics_platform", "compression": true}',
-         's3://backup-bucket/2024-02-07/analytics_platform.sql.gz',
+         '{"database": "{{ database }}", "compression": true}',
+         's3://backup-bucket/2024-02-07/{{ database }}.sql.gz',
          NULL, 6300.0, 3, 0, 3,
          '["backup", "maintenance", "automated"]',
          '{"schedule": "daily", "retention_days": 30}')

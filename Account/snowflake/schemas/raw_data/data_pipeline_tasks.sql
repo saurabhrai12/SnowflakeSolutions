@@ -1,7 +1,7 @@
 -- Data Pipeline Tasks for Automated Raw to Processed Data Movement
 -- Uses streams to trigger processing only when data changes
 
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA raw_data;
 
 -- Drop existing tasks if they exist
@@ -13,15 +13,15 @@ DROP TASK IF EXISTS customer_analytics_task;
 
 -- Task to process customer changes
 CREATE OR ALTER TASK customer_analytics_task
-    WAREHOUSE = analytics_wh
-    SCHEDULE = '2 minute'  -- Check every 2 minutes
+    WAREHOUSE = {{ warehouse }}
+    SCHEDULE = '{{ task_schedule | default("2 minute") }}'  -- Check frequency based on environment
     WHEN SYSTEM$STREAM_HAS_DATA('customers_stream')
     AS
     CALL processed_data.process_customer_changes();
 
 -- Task to process product changes
 CREATE OR ALTER TASK product_analytics_task
-    WAREHOUSE = analytics_wh
+    WAREHOUSE = {{ warehouse }}
     SCHEDULE = '2 minute'  -- Check every 2 minutes
     WHEN SYSTEM$STREAM_HAS_DATA('products_stream')
     AS
@@ -29,7 +29,7 @@ CREATE OR ALTER TASK product_analytics_task
 
 -- Task to process order changes and update metrics
 CREATE OR ALTER TASK order_metrics_task
-    WAREHOUSE = analytics_wh
+    WAREHOUSE = {{ warehouse }}
     SCHEDULE = '1 minute'  -- More frequent for order processing
     WHEN SYSTEM$STREAM_HAS_DATA('orders_stream')
     AS
@@ -37,7 +37,7 @@ CREATE OR ALTER TASK order_metrics_task
 
 -- Task to process order items changes (for product analytics)
 CREATE OR ALTER TASK order_items_analytics_task
-    WAREHOUSE = analytics_wh
+    WAREHOUSE = {{ warehouse }}
     SCHEDULE = '3 minute'  -- Less frequent as it's more for detailed analytics
     WHEN SYSTEM$STREAM_HAS_DATA('order_items_stream')
     AS
@@ -45,10 +45,32 @@ CREATE OR ALTER TASK order_items_analytics_task
 
 -- Master data pipeline orchestration task
 CREATE OR ALTER TASK data_pipeline_orchestrator
-    WAREHOUSE = analytics_wh
+    WAREHOUSE = {{ warehouse }}
     SCHEDULE = '5 minute'  -- Runs every 5 minutes to check overall pipeline health
     AS
     CALL monitor_pipeline_health();
+
+{% if environment == 'prod' %}
+-- Production-only cleanup task for data retention compliance
+CREATE OR ALTER TASK prod_data_cleanup_task
+    WAREHOUSE = {{ warehouse }}
+    SCHEDULE = '1440 minute'  -- Daily
+    AS
+    BEGIN
+        -- Clean up old job records beyond retention period
+        DELETE FROM jobs WHERE created_at < DATEADD(day, -{{ retention_days }}, CURRENT_DATE());
+        
+        -- Archive old monitoring data
+        INSERT INTO monitoring.archived_metrics 
+        SELECT * FROM monitoring.system_metrics 
+        WHERE metric_timestamp < DATEADD(day, -{{ retention_days }}, CURRENT_DATE());
+        
+        DELETE FROM monitoring.system_metrics 
+        WHERE metric_timestamp < DATEADD(day, -{{ retention_days }}, CURRENT_DATE());
+    END;
+
+ALTER TASK prod_data_cleanup_task SUSPEND; -- Enable manually after testing
+{% endif %}
 
 -- Initially suspend all tasks for safety (enable manually after testing)
 ALTER TASK customer_analytics_task SUSPEND;

@@ -1,7 +1,7 @@
 -- Task Management and Control Scripts
 -- Commands to manage Snowflake tasks
 
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA raw_data;
 
 -- ============================================

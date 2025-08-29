@@ -1,7 +1,7 @@
 -- Data Pipeline Management and Control Scripts
 -- Commands to manage the data pipeline tasks and monitor streams
 
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA raw_data;
 
 -- ============================================

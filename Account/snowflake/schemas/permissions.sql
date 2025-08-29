@@ -1,7 +1,7 @@
 -- Permissions and Security Setup
 -- Uses CREATE OR ALTER for idempotent deployments
 
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 
 -- Grant schema usage permissions
 GRANT USAGE ON SCHEMA raw_data TO ROLE PUBLIC;

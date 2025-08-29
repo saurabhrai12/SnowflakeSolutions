@@ -1,7 +1,7 @@
 -- Processed Data Schema Tables
 -- Uses CREATE OR ALTER for idempotent deployments
 
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA processed_data;
 
 -- Create or alter sales metrics table for reporting

@@ -2,7 +2,7 @@
 -- This script demonstrates the complete data pipeline from ingestion to report delivery
 
 -- Set context
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA raw_data;
 USE WAREHOUSE analytics_wh;
 

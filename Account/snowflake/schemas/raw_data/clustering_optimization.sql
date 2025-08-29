@@ -1,7 +1,7 @@
 -- Snowflake Performance Optimization
 -- Uses clustering keys and search optimization instead of traditional indexes
 
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA raw_data;
 
 -- ============================================

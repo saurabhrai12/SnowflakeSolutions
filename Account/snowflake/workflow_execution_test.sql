@@ -2,7 +2,7 @@
 -- This script tests the complete data pipeline with actual table structures
 
 -- Set context
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA raw_data;
 USE WAREHOUSE analytics_wh;
 

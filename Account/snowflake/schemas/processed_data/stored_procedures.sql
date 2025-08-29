@@ -1,7 +1,7 @@
 -- Processed Data Schema Stored Procedures
 -- Uses CREATE OR ALTER for idempotent deployments
 
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA processed_data;
 
 -- Procedure to calculate customer analytics

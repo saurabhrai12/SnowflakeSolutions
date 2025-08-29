@@ -1,7 +1,7 @@
 -- Pipeline Monitoring Procedures
 -- Called by tasks for health monitoring and error handling
 
-USE DATABASE analytics_platform;
+USE DATABASE {{ database }};
 USE SCHEMA raw_data;
 
 -- Drop existing procedures if they exist
