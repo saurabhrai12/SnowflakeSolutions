@@ -6,53 +6,23 @@ name: 🗄️ Snowflake Branch-Based Deployment Pipeline
 # - Manual workflow_dispatch → Any environment (DEV/STAGING/PROD)
 # - Pull requests → DEV environment (dry run)
 
-on:
-  # Manual trigger with environment selection
-  workflow_dispatch:
-    inputs:
-      target_environment:
-        description: 'Target Environment'
-        required: true
-        default: 'DEV'
-        type: choice
-        options:
-          - DEV
-          - STAGING
-          - PROD
-      deployment_mode:
-        description: 'Deployment Mode'
-        required: true
-        default: 'INCREMENTAL'
-        type: choice
-        options:
-          - INCREMENTAL
-          - FULL
-          - SCHEMA_SPECIFIC
-      target_schemas:
-        description: 'Target Schemas (comma-separated, leave empty for all)'
-        required: false
-        default: ''
-        type: string
-      dry_run:
-        description: 'Dry Run (no actual deployment)'
-        required: true
-        default: true
-        type: boolean
-      load_sample_data:
-        description: 'Load Sample Data (02_sample_data.sql)'
-        required: false
-        default: false
-        type: boolean
-      
-  # Automatic triggers: feature branches → DEV, main → STAGING
-  push:
-    branches: [ main, 'feature/**', 'feat/**', 'dev/**' ]
-    paths: [ 'Account/snowflake/**', 'Customer/snowflake/**', 'shared/snowflake/**' ]
-    
-  # Pull requests always deploy to DEV (dry run)
-  pull_request:
-    branches: [ main ]
-    paths: [ 'Account/snowflake/**', 'Customer/snowflake/**', 'shared/snowflake/**' ]
+# LEGACY WORKFLOW - DISABLED  
+# This workflow has been replaced by snowflake-deployment.yml with Git integration
+# To re-enable, uncomment the 'on:' section below
+
+# on:
+#   # Manual trigger with environment selection
+#   workflow_dispatch:
+#     inputs:
+#       target_environment:
+#         description: 'Target Environment'
+#         required: true
+#         default: 'DEV'
+#         type: choice
+#         options:
+#           - DEV
+#           - STAGING
+#           - PROD
 
 env:
   # Build information
