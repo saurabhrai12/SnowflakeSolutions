@@ -322,35 +322,59 @@ jobs:
           
           # Deploy in dependency order using processed SQL files
           echo "  📊 Deploying monitoring schema..."
-          for file in processed-sql/Customer/snowflake/monitoring/*.sql; do
-            if [ -f "$file" ]; then
-              echo "    📊 Executing: $file"
-              snow sql -f "$file" --connection default
-            fi
+          # Deploy files in priority order based on deployment config
+          for object_type in $(yq eval '.object_types[] | [.priority, .name] | join(" ")' .github/deployment-config.yml | sort -n | cut -d' ' -f2-); do
+            pattern=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .pattern" .github/deployment-config.yml)
+            description=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .description" .github/deployment-config.yml)
+            
+            for file in processed-sql/Customer/snowflake/monitoring/$pattern; do
+              if [[ -f "$file" && "$(basename "$file")" == $pattern ]]; then
+                echo "    📊 Executing: $file ($description)"
+                snow sql -f "$file" --connection default
+              fi
+            done
           done
           
-          echo "  📊 Deploying raw_data schema..."  
-          for file in processed-sql/Account/snowflake/schemas/raw_data/*.sql; do
-            if [ -f "$file" ]; then
-              echo "    📊 Executing: $file"
-              snow sql -f "$file" --connection default
-            fi
+          echo "  📊 Deploying raw_data schema..."
+          # Deploy files in priority order based on deployment config
+          for object_type in $(yq eval '.object_types[] | [.priority, .name] | join(" ")' .github/deployment-config.yml | sort -n | cut -d' ' -f2-); do
+            pattern=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .pattern" .github/deployment-config.yml)
+            description=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .description" .github/deployment-config.yml)
+            
+            for file in processed-sql/Account/snowflake/schemas/raw_data/$pattern; do
+              if [[ -f "$file" && "$(basename "$file")" == $pattern ]]; then
+                echo "    📊 Executing: $file ($description)"
+                snow sql -f "$file" --connection default
+              fi
+            done
           done
           
           echo "  📊 Deploying processed_data schema..."
-          for file in processed-sql/Account/snowflake/schemas/processed_data/*.sql; do
-            if [ -f "$file" ]; then
-              echo "    📊 Executing: $file"
-              snow sql -f "$file" --connection default
-            fi
+          # Deploy files in priority order based on deployment config
+          for object_type in $(yq eval '.object_types[] | [.priority, .name] | join(" ")' .github/deployment-config.yml | sort -n | cut -d' ' -f2-); do
+            pattern=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .pattern" .github/deployment-config.yml)
+            description=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .description" .github/deployment-config.yml)
+            
+            for file in processed-sql/Account/snowflake/schemas/processed_data/$pattern; do
+              if [[ -f "$file" && "$(basename "$file")" == $pattern ]]; then
+                echo "    📊 Executing: $file ($description)"
+                snow sql -f "$file" --connection default
+              fi
+            done
           done
           
           echo "  📊 Deploying reporting schema..."
-          for file in processed-sql/shared/snowflake/reporting/*.sql; do
-            if [ -f "$file" ]; then
-              echo "    📊 Executing: $file"
-              snow sql -f "$file" --connection default
-            fi
+          # Deploy files in priority order based on deployment config
+          for object_type in $(yq eval '.object_types[] | [.priority, .name] | join(" ")' .github/deployment-config.yml | sort -n | cut -d' ' -f2-); do
+            pattern=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .pattern" .github/deployment-config.yml)
+            description=$(yq eval ".object_types[] | select(.name == \"$object_type\") | .description" .github/deployment-config.yml)
+            
+            for file in processed-sql/shared/snowflake/reporting/$pattern; do
+              if [[ -f "$file" && "$(basename "$file")" == $pattern ]]; then
+                echo "    📊 Executing: $file ($description)"
+                snow sql -f "$file" --connection default
+              fi
+            done
           done
           
           echo "✅ All schema scripts deployed"
