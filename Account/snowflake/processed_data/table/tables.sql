@@ -28,12 +28,12 @@ CREATE OR ALTER TABLE customer_analytics (
     avg_order_value NUMBER(10,2),
     days_since_last_order NUMBER(10,0),
     customer_status STRING,
-    customer_segment STRING,
     predicted_ltv NUMBER(12,2),
     churn_risk_score NUMBER(3,2),
     preferred_categories ARRAY,
     created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-    updated_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+    updated_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    customer_segment STRING
 );
 
 -- Create or alter product analytics table
